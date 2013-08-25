@@ -1,6 +1,6 @@
 CC        = gcc
 EXEC      = slaMEM
-CFLAGS    = -Wall -Wextra -Wunused
+CFLAGS    = -Wall -Wextra -Wunused -mpopcnt
 CDEBUG    = -g -ggdb
 COPTIMIZE = -Wuninitialized -O9 -fomit-frame-pointer
 CLIBS     = -lm
@@ -11,7 +11,7 @@ TXTS      = $(wildcard *.txt README* LICENSE*)
 SCRIPTS   = $(wildcard Makefile* *.sh *.py)
 
 NAME	:= "slaMEM"
-VERSION	:= $(shell sed -n 's/.*\[ slaMEM v\(.*\) \].*/\1/p' slamem.c)
+VERSION	:= $(shell sed -n 's/.*VERSION \"\(.*\)\".*/\1/p' slamem.c)
 CPUARCH	:= $(shell uname -m)
 
 ifeq ($(MAKECMDGOALS),debug)

@@ -54,19 +54,19 @@ typedef struct _IntPair {
 	int value;
 } IntPair;
 
-int bwtSize;
-int *fullLCPArray;
-int *fullPLPArray;
-int *fullSuffixArray;
-SampledPosMarks *bwtMarkedPositions;
-int numLCPSamples;
-LCPSamplesBlock *sampledLCPArray;
-LCPSamplesBlock *lastLCPSamplesBlock;
-int numOversizedLCPs, numOversizedPLPs;
-int *extraLCPvalues, *extraPLPvalues;
+static int bwtLength;
+static int *fullLCPArray;
+static int *fullPLPArray;
+static int *fullSuffixArray;
+static SampledPosMarks *bwtMarkedPositions;
+static int numLCPSamples;
+static LCPSamplesBlock *sampledLCPArray;
+static LCPSamplesBlock *lastLCPSamplesBlock;
+static int numOversizedLCPs, numOversizedPLPs;
+static int *extraLCPvalues, *extraPLPvalues;
 
-unsigned long long int *offsetMasks64bits;
-int *perByteCounts;
+static unsigned long long int *offsetMasks64bits;
+static int *perByteCounts;
 
 #ifdef DEBUGLCP
 int testNumCalls = 0;
@@ -117,7 +117,7 @@ int GetLcpPosFromBwtPos(unsigned int pos){
 	bitsArray = ( ( bitsArray + ( bitsArray >> 4 ) ) & 0x0F0F0F0F0F0F0F0F ); // 0x0F = 00001111b ; 8 bits ( final max count = 8 -> 4 bits )
 	bitsArray = ( bitsArray + ( bitsArray >> 8 ) ); // the final count will be at most 64, which is 7 bits, and since we now have blocks of 8 bits, we can add them without masking because there will not be any overflow
 	bitsArray = ( bitsArray + ( bitsArray >> 16 ) );
-	bitsArray = ( ( bitsArray + ( bitsArray >> 32 ) ) & 0x000000007F ); // get the last 7 bits ( final max count = 64 -> 7 bits )
+	bitsArray = ( ( bitsArray + ( bitsArray >> 32 ) ) & 0x000000000000007F ); // get the last 7 bits ( final max count = 64 -> 7 bits )
 	return ( pos + (int)bitsArray );
 	#endif
 }
@@ -185,7 +185,7 @@ int GetBwtPosFromLcpPos(int lcpPos, int bwtPos){
 	bwtBlock = &(bwtMarkedPositions[bwtPos]);
 	bwtPos = (bwtPos << BWTBLOCKSHIFT); // position at the beginning of the block
 	if( lcpPos > (bwtBlock->marksCount) ){ // search down/ahead
-		while( (bwtPos < bwtSize) && ((bwtBlock->marksCount) < lcpPos) ){ // get the block with the cumulative lcp count closer to our lcp position
+		while( (bwtPos < bwtLength) && ((bwtBlock->marksCount) < lcpPos) ){ // get the block with the cumulative lcp count closer to our lcp position
 			bwtBlock++;
 			bwtPos += BWTBLOCKSIZE;
 		}
@@ -224,7 +224,7 @@ int GetBwtPosFromLcpPos(int lcpPos){
 	bwtPos = (bwtPos << BWTBLOCKSHIFT); // position at the beginning of the block
 	bwtBlock++; // check the lcp count of the next block
 	bwtPos += BWTBLOCKSIZE;
-	if( (bwtPos >= bwtSize) || ((bwtBlock->marksCount) >= lcpPos) ){ // if the BWT position we want is in the initial block
+	if( (bwtPos >= bwtLength) || ((bwtBlock->marksCount) >= lcpPos) ){ // if the BWT position we want is in the initial block
 		bwtBlock--;
 		bwtPos = (lcpBlock->baseBwtPos); // start searching on the already known position
 		lcpPos = (lcpPos & BLOCKMASK); // how many marked positions do we want ahead of that one
@@ -232,7 +232,7 @@ int GetBwtPosFromLcpPos(int lcpPos){
 		bwtPos++; // that position had a sample, but it's not the one we want, so start searching on the next position (it will never be on the next block, othewise we would have (nextBwtBlock->marksCount)<lcpPos)
 		bitMask = ( 1ULL << (bwtPos & BWTBLOCKMASK) ); // set the bit mask for our starting position inside the block
 	} else { // the LCP sample we want is in a BWT block further ahead
-		while( (bwtPos < bwtSize) && ((bwtBlock->marksCount) < lcpPos) ){ // get the block with the cumulative lcp count closer to our lcp position
+		while( (bwtPos < bwtLength) && ((bwtBlock->marksCount) < lcpPos) ){ // get the block with the cumulative lcp count closer to our lcp position
 			bwtBlock++;
 			bwtPos += BWTBLOCKSIZE;
 		}
@@ -471,7 +471,7 @@ int GetTrueDepth(unsigned int topptr, unsigned int bottomptr){
 	int depth; // non-singular interval: source depth = min( LCP[top+1] , LCP[bottom] )
 	depth=fullLCPArray[bottomptr];
 	topptr++;
-	if( topptr!=(unsigned int)bwtSize ){
+	if( topptr!=(unsigned int)bwtLength ){
 		if( (++bottomptr)==topptr ){
 			if( fullLCPArray[topptr]>depth ) depth=fullLCPArray[topptr]; // single position: source depth = max( LCP[pos] , LCP[pos+1] )
 		} else {
@@ -487,9 +487,9 @@ int GetTrueEnclosingLCPInterval(unsigned int *topptr, unsigned int *bottomptr){
 	int destdepth; // destination (parent) depth = max( LCP[top] , LCP[bottom+1] )
 	destdepth=fullLCPArray[(*topptr)];
 	(*bottomptr)++;
-	if( (*bottomptr)!=(unsigned int)bwtSize && fullLCPArray[(*bottomptr)]>destdepth ) destdepth=fullLCPArray[(*bottomptr)];
+	if( (*bottomptr)!=(unsigned int)bwtLength && fullLCPArray[(*bottomptr)]>destdepth ) destdepth=fullLCPArray[(*bottomptr)];
 	while( fullLCPArray[(*topptr)]>=destdepth ) (*topptr)--; // find closest pos above with an LCP value lower than this one
-	while( (*bottomptr)!=(unsigned int)bwtSize && fullLCPArray[(*bottomptr)]>=destdepth) (*bottomptr)++; // find closest pos bellow with an LCP value lower than this one
+	while( (*bottomptr)!=(unsigned int)bwtLength && fullLCPArray[(*bottomptr)]>=destdepth) (*bottomptr)++; // find closest pos bellow with an LCP value lower than this one
 	(*bottomptr)--; // go back/up one pos
 	return destdepth;
 }
@@ -498,7 +498,7 @@ int GetTrueEnclosingLCPInterval(unsigned int *topptr, unsigned int *bottomptr){
 #ifdef DEBUGLCP
 int GetTrueEnclosingLCPIntervalWithLcpValue(int lcp, unsigned int *topptr, unsigned int *bottomptr){
 	while( (*topptr)!=0 && fullLCPArray[(*topptr)]>=lcp ) (*topptr)--; // find closest pos above with an LCP value lower than this one
-	while( (*bottomptr)!=(unsigned int)bwtSize && fullLCPArray[(*bottomptr)]>=lcp) (*bottomptr)++; // find closest pos bellow with an LCP value lower than this one
+	while( (*bottomptr)!=(unsigned int)bwtLength && fullLCPArray[(*bottomptr)]>=lcp) (*bottomptr)++; // find closest pos bellow with an LCP value lower than this one
 	(*bottomptr)--; // go back/up one pos
 	return lcp;
 }
@@ -551,8 +551,8 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 		}
 		perByteCounts[i] = k;
 	}
-	bwtSize = (textsize+1);
-	k = (((bwtSize-1)>>BWTBLOCKSHIFT)+1); // last valid pos, quotient, add one
+	bwtLength = (textsize+1);
+	k = (((bwtLength-1)>>BWTBLOCKSHIFT)+1); // last valid pos, quotient, add one
 	bwtMarkedPositions = (SampledPosMarks *)malloc(k*sizeof(SampledPosMarks));
 	sampledLCPArray = (LCPSamplesBlock *)malloc(1*sizeof(LCPSamplesBlock));
 	extraLCPvalues = (int *)malloc(1*sizeof(int));
@@ -581,10 +581,10 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 	sumValues=0;
 	maxValue=0;
 	#ifdef DEBUGLCP
-	fullLCPArray=(int *)malloc(bwtSize*sizeof(int));
+	fullLCPArray=(int *)malloc(bwtLength*sizeof(int));
 	fullLCPArray[0]=(-1);
 	#endif
-	progressStep=(bwtSize/10);
+	progressStep=(bwtLength/10);
 	progressCounter=0;
 	k=(-1); // current bwt block id
 	bwtBlock=&(bwtMarkedPositions[0]); // first bwt block
@@ -598,7 +598,7 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 	prevlcp=(-1); // at the 0-th position there's no position before
 	prevtextpos=textsize; // the 0-th BWT position corresponds to the terminator symbol at the last text position
 	textpos=0;
-	for(bwtpos=1;bwtpos<=(unsigned int)bwtSize;bwtpos++){ // all BWT positions and one fake next-to-last position to fill last position
+	for(bwtpos=1;bwtpos<=(unsigned int)bwtLength;bwtpos++){ // all BWT positions and one fake next-to-last position to fill last position
 		if(verbose){
 			if(progressCounter==progressStep){ // print progress dots
 				putchar('.');
@@ -606,7 +606,7 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 				progressCounter=0;
 			} else progressCounter++;
 		}
-		if(bwtpos!=(unsigned int)bwtSize){
+		if(bwtpos!=(unsigned int)bwtLength){
 			//topstring=(char *)(text+fullSuffixArray[(bwtpos-1)]);
 			//bottomstring=(char *)(text+fullSuffixArray[bwtpos]);
 			#ifdef BUILDLCP
@@ -682,14 +682,14 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 	lastLCPSamplesBlock = &(sampledLCPArray[(numLCPSamples >> BLOCKSHIFT)]);
 	if(verbose){
 		printf(" OK\n");
-		printf(":: %.2lf%% samples (%d of %d)\n",((double)numLCPSamples/(double)bwtSize)*100.0,numLCPSamples,bwtSize);
+		printf(":: %.2lf%% samples (%d of %d)\n",((double)numLCPSamples/(double)bwtLength)*100.0,numLCPSamples,bwtLength);
 		printf(":: %.2lf%% oversized samples (%d of %d)\n",((double)numOversizedLCPs/(double)numLCPSamples)*100.0,numOversizedLCPs,numLCPSamples);
-		printf(":: Average LCP value = %d (max=%d)\n",(int)(sumValues/(long long)bwtSize),maxValue);
+		printf(":: Average LCP value = %d (max=%d)\n",(int)(sumValues/(long long)bwtLength),maxValue);
 	}
 	#ifdef DEBUGLCP
 	if(verbose){ printf("> Testing Sampled LCP Array "); fflush(stdout); }
 	k=(-1);
-	for(bwtpos=0;bwtpos<(unsigned int)bwtSize;bwtpos++){
+	for(bwtpos=0;bwtpos<(unsigned int)bwtLength;bwtpos++){
 		if(verbose){
 			if(progressCounter==progressStep){ // print progress dots
 				putchar('.');
@@ -698,19 +698,19 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 			} else progressCounter++;
 		}
 		if(GetLCP(bwtpos)!=fullLCPArray[bwtpos]) break;
-		if(((bwtpos+1)==(unsigned int)bwtSize) || (fullLCPArray[bwtpos]!=fullLCPArray[bwtpos+1])){ // only check marked positions
+		if(((bwtpos+1)==(unsigned int)bwtLength) || (fullLCPArray[bwtpos]!=fullLCPArray[bwtpos+1])){ // only check marked positions
 			k=GetLcpPosFromBwtPos(bwtpos);
 			if(GetBwtPosFromLcpPos(k)!=(int)bwtpos) break;
 		}
 	}
-	if((bwtpos==(unsigned int)bwtSize) && (k==(numLCPSamples-1))){ if(verbose) printf(" OK\n"); }
+	if((bwtpos==(unsigned int)bwtLength) && (k==(numLCPSamples-1))){ if(verbose) printf(" OK\n"); }
 	else printf("\n> ERROR: sampledLCP[%u]=%d =!= fullLCP[%u]=%d (bwtPos=%u->lcpPos=%d->bwtPos=%d) \n",bwtpos,GetLCP(bwtpos),bwtpos,fullLCPArray[bwtpos],bwtpos,k,GetBwtPosFromLcpPos(k));
 	#endif
 	if(verbose){ printf("> Collecting Previous/Next Smaller Values "); fflush(stdout); }
 	#ifdef DEBUGLCP
 	fullPLPArray=(int *)malloc(numLCPSamples*sizeof(int));
 	fullPLPArray[0]=0;
-	fullPLPArray[(numLCPSamples-1)]=(bwtSize-1);
+	fullPLPArray[(numLCPSamples-1)]=(bwtLength-1);
 	#endif
 	progressStep=(numLCPSamples/10);
 	progressCounter=0;
@@ -866,7 +866,7 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 	lcppos = (numLCPSamples-1);  // set value for last pos
 	sampledLCPArray[(lcppos >> BLOCKSHIFT)].prefixLinkPointer[(lcppos & BLOCKMASK)] = 0;
 	oversizedCorners[numOversizedPLPs].pos = lcppos;
-	oversizedCorners[numOversizedPLPs].value = 0; // zero distance from (bwtSize-1);
+	oversizedCorners[numOversizedPLPs].value = 0; // zero distance from (bwtLength-1);
 	numOversizedPLPs++;
 	qsort(oversizedCorners,numOversizedPLPs,sizeof(IntPair),CompareIntPair); // sort oversized PLP values by their position in the SLCP array
 	extraPLPvalues = (int *)malloc(numOversizedPLPs*sizeof(int)); // final array of oversized values
@@ -893,11 +893,11 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 	//indexLCPInfo[textsize].destinationLCP = 0;
 	//indexLCPInfo[textsize].prefixLinkPointer = textsize;
 	if(verbose){
-		k = (unsigned int)( sizeof(*bwtMarkedPositions)*(((bwtSize-1)>>BWTBLOCKSHIFT)+1) + sizeof(*sampledLCPArray)*((numLCPSamples>>BLOCKSHIFT)+1) + sizeof(*extraLCPvalues)*numOversizedLCPs + sizeof(*extraPLPvalues)*numOversizedPLPs );
+		k = (unsigned int)( sizeof(*bwtMarkedPositions)*(((bwtLength-1)>>BWTBLOCKSHIFT)+1) + sizeof(*sampledLCPArray)*((numLCPSamples>>BLOCKSHIFT)+1) + sizeof(*extraLCPvalues)*numOversizedLCPs + sizeof(*extraPLPvalues)*numOversizedPLPs );
 		printf(" OK\n");
 		printf(":: %.2lf%% oversized values (%d of %d)\n",((double)numOversizedPLPs/(double)numLCPSamples)*100.0,numOversizedPLPs,numLCPSamples);
 		printf(":: Average SV distance = %.2lf (max=%d)\n",((double)sumValues/(double)numLCPSamples),maxValue);
-		printf(":: Total SLCP+SV structure size = %.1lf MB (%u bytes)\n", (double)( (unsigned int)((((bwtSize-1)>>BWTBLOCKSHIFT)+1)*sizeof(SampledPosMarks)) + (unsigned int)((((numLCPSamples-1)>>BLOCKSHIFT)+1)*sizeof(LCPSamplesBlock)) + (unsigned int)((numOversizedLCPs+numOversizedPLPs)*sizeof(int)) ) / (double)1000000U , k);
+		printf(":: Total SLCP+SV structure size = %.1lf MB (%u bytes)\n", (double)( (unsigned int)((((bwtLength-1)>>BWTBLOCKSHIFT)+1)*sizeof(SampledPosMarks)) + (unsigned int)((((numLCPSamples-1)>>BLOCKSHIFT)+1)*sizeof(LCPSamplesBlock)) + (unsigned int)((numOversizedLCPs+numOversizedPLPs)*sizeof(int)) ) / (double)1000000U , k);
 		//printf(":: %d lcp-intervals (tree = ~%u bytes)\n",numLcpIntervals, (unsigned int)( k - sizeof(LCPSamplesBlock)*((numLCPSamples>>BLOCKSHIFT)+1) + sizeof(LCPIntervalTreeBlock)*((numLcpIntervals>>BLOCKSHIFT)+1) ) );
 	}
 	#ifdef DEBUGLCP
@@ -952,11 +952,11 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 	} else printf("\n> ERROR: sampledNPSV[%u]=(%d){%u,%u} =!= fullNPSV[%u]=(%d){%u,%u}\n",bwtpos,i,stopptr,sbottomptr,bwtpos,k,topptr,bottomptr);
 	/*
 	if(verbose){ printf("> Testing Full Parent Intervals "); fflush(stdout); }
-	progressStep=(bwtSize/10);
+	progressStep=(bwtLength/10);
 	progressCounter=0;
 	topptr=0;
 	bottomptr=0;
-	for(bwtpos=0;bwtpos<(unsigned int)bwtSize;bwtpos++){
+	for(bwtpos=0;bwtpos<(unsigned int)bwtLength;bwtpos++){
 		if(verbose){
 			if(progressCounter==progressStep){ // print progress dots
 				putchar('.');
@@ -976,7 +976,7 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 		}
 		if(i!=k || stopptr!=topptr || sbottomptr!=bottomptr) break;
 	}
-	if(bwtpos==(unsigned int)bwtSize){
+	if(bwtpos==(unsigned int)bwtLength){
 		if(verbose) printf(" OK\n");
 	} else printf("\n> ERROR: sampledNPSV[%u]=(%d){%u,%u} =!= fullNPSV[%u]=(%d){%u,%u}\n",bwtpos,i,stopptr,sbottomptr,bwtpos,k,topptr,bottomptr);
 	*/

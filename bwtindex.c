@@ -2,39 +2,39 @@
 #include <stdlib.h>
 #include <limits.h>
 #include "bwtindex.h"
-
-#define FILEHEADER "IDX0"
-
-#define ALPHABETSIZE 6
-#define ALPHABET "$NACGT"
+#include "packednumbers.h"
 
 #define BUILD_LCP 1
 //#define UNBOUNDED_LCP 1 // if the lcp values are unbounded (int) or truncated to 255 (unsigned char)
 //#define DEBUG_INDEX 1
 //#define FILL_INDEX 1
 
-typedef struct _IndexBlock {
-	unsigned int bwtLowBits;
-	unsigned int bwtHighBits;
-	unsigned int specialLettersMask;
-	//unsigned int bwtBits[3];
-	unsigned int letterJumpsSample[5];
-	unsigned int textPositionSample;
+#ifdef DEBUG_INDEX
+#include <sys/timeb.h>
+#endif
+
+//#define FILEHEADER "IDX0"
+
+typedef struct _IndexBlock { // 9*32 bits / 32 char per block = 9 bits per char
+	unsigned int bwtBits[3]; // 3 bits (x32) for the letters in this order: $NACGT (000 to 101)
+	unsigned int letterJumpsSample[5]; // cumulative counts for NACGT (not $) up to but *not* including this block
+	unsigned int textPositionSample; // position in the text of the first suffix in this block
 } IndexBlock;
 
-#ifdef BUILD_LCP
-#ifdef UNBOUNDED_LCP
-int *LCPArray;
-#else
-unsigned char *LCPArray;
-#endif
-#endif
+#define ALPHABETSIZE 6
+//static const char letterChars[ALPHABETSIZE] = { '$' , 'N' , 'A' , 'C' , 'G' , 'T' }; // get letter char from letter id
+#define LETTERCHARS "$NACGT"
+//static const unsigned int sampleIntervalSize = 32; // = (1<<sampleIntervalShift) = 32
+#define SAMPLEINTERVALSIZE 32
+//static const unsigned int sampleIntervalShift = 5; // sample interval of 32 positions (2^5=32)
+#define SAMPLEINTERVALSHIFT 5
+//static const unsigned int sampleIntervalMask = 0x0000001F; // = ((1<<sampleIntervalShift)-1) = (32-1)
+#define SAMPLEINTERVALMASK 0x0000001F
+//static const unsigned int firstLetterMask = 0x00000001; // lowest bit
+#define FIRSTLETTERMASK 0x00000001
 
-#ifdef DEBUG_INDEX
-unsigned int numBackSteps;
-#endif
-
-const unsigned int offsetMasks[32] = { // = (1UL<<offset)
+// Masks to select only the bit at the offset = (1UL<<offset)
+static const unsigned int offsetMasks[32] = {
 	0x00000001, // 1st bit
 	0x00000002, // 2nd bit
 	0x00000004, // 3rd bit
@@ -68,41 +68,8 @@ const unsigned int offsetMasks[32] = { // = (1UL<<offset)
 	0x40000000, // 31st bit
 	0x80000000  // 32nd bit
 };
-const unsigned int inverseOffsetMasks[32] = { // = ~(1UL<<offset)
-	0xFFFFFFFE, // 1st bit
-	0xFFFFFFFD, // 2nd bit
-	0xFFFFFFFB, // 3rd bit
-	0xFFFFFFF7, // 4th bit
-	0xFFFFFFEF, // 5th bit
-	0xFFFFFFDF, // 6th bit
-	0xFFFFFFBF, // 7th bit
-	0xFFFFFF7F, // 8th bit
-	0xFFFFFEFF, // 9th bit
-	0xFFFFFDFF, // 10th bit
-	0xFFFFFBFF, // 11th bit
-	0xFFFFF7FF, // 12th bit
-	0xFFFFEFFF, // 13th bit
-	0xFFFFDFFF, // 14th bit
-	0xFFFFBFFF, // 15th bit
-	0xFFFF7FFF, // 16th bit
-	0xFFFEFFFF, // 17th bit
-	0xFFFDFFFF, // 18th bit
-	0xFFFBFFFF, // 19th bit
-	0xFFF7FFFF, // 20th bit
-	0xFFEFFFFF, // 21st bit
-	0xFFDFFFFF, // 22nd bit
-	0xFFBFFFFF, // 23rd bit
-	0xFF7FFFFF, // 24th bit
-	0xFEFFFFFF, // 25th bit
-	0xFDFFFFFF, // 26th bit
-	0xFBFFFFFF, // 27th bit
-	0xF7FFFFFF, // 28th bit
-	0xEFFFFFFF, // 29th bit
-	0xDFFFFFFF, // 30th bit
-	0xBFFFFFFF, // 31st bit
-	0x7FFFFFFF  // 32nd bit
-};
-const unsigned int firstLettersMasks[33] = { // all bits before the offset = ((1UL<<offset)-1UL)
+// Masks to select all the bits before (but not at) the offset = ((1UL<<offset)-1UL)
+static const unsigned int searchOffsetMasks[33] = {
 	0x00000000, // lower 0 letters
 	0x00000001, // lower 1 letters
 	0x00000003, // lower 2 letters
@@ -137,129 +104,317 @@ const unsigned int firstLettersMasks[33] = { // all bits before the offset = ((1
 	0x7FFFFFFF, // lower 31 letters
 	0xFFFFFFFF  // lower 32 letters
 };
-const unsigned int lastLettersMasks[33] = { // all bits at or after offset = ~((1UL<<offset)-1UL)
-	0xFFFFFFFF, // higher 32 letters
-	0xFFFFFFFE, // higher 31 letters
-	0xFFFFFFFC, // higher 30 letters
-	0xFFFFFFF8, // higher 29 letters
-	0xFFFFFFF0, // higher 28 letters
-	0xFFFFFFE0, // higher 27 letters
-	0xFFFFFFC0, // higher 26 letters
-	0xFFFFFF80, // higher 25 letters
-	0xFFFFFF00, // higher 24 letters
-	0xFFFFFE00, // higher 23 letters
-	0xFFFFFC00, // higher 22 letters
-	0xFFFFF800, // higher 21 letters
-	0xFFFFF000, // higher 20 letters
-	0xFFFFE000, // higher 19 letters
-	0xFFFFC000, // higher 18 letters
-	0xFFFF8000, // higher 17 letters
-	0xFFFF0000, // higher 16 letters
-	0xFFFE0000, // higher 15 letters
-	0xFFFC0000, // higher 14 letters
-	0xFFF80000, // higher 13 letters
-	0xFFF00000, // higher 12 letters
-	0xFFE00000, // higher 11 letters
-	0xFFC00000, // higher 10 letters
-	0xFF800000, // higher 9 letters
-	0xFF000000, // higher 8 letters
-	0xFE000000, // higher 7 letters
-	0xFC000000, // higher 6 letters
-	0xF8000000, // higher 5 letters
-	0xF0000000, // higher 4 letters
-	0xE0000000, // higher 3 letters
-	0xC0000000, // higher 2 letters
-	0x80000000, // higher 1 letters
-	0x00000000  // higher 0 letters
+static const unsigned int inverseLetterBitMasks[ALPHABETSIZE][3] = {
+	{
+		0xFFFFFFFF, // 1st bit mask for '$' (000): ~0...0 = 1...1
+		0xFFFFFFFF, // 2nd bit mask for '$' (000): ~0...0 = 1...1
+		0xFFFFFFFF, // 3rd bit mask for '$' (000): ~0...0 = 1...1
+	},{
+		0x00000000, // 1st bit mask for 'N' (001): ~1...1 = 0...0
+		0xFFFFFFFF, // 2nd bit mask for 'N' (001): ~0...0 = 1...1
+		0xFFFFFFFF  // 3rd bit mask for 'N' (001): ~0...0 = 1...1
+	},{
+		0xFFFFFFFF, // 1st bit mask for 'A' (010): ~0...0 = 1...1
+		0x00000000, // 2nd bit mask for 'A' (010): ~1...1 = 0...0
+		0xFFFFFFFF  // 3rd bit mask for 'A' (010): ~0...0 = 1...1
+	},{
+		0x00000000, // 1st bit mask for 'C' (011): ~1...1 = 0...0
+		0x00000000, // 2nd bit mask for 'C' (011): ~1...1 = 0...0
+		0xFFFFFFFF  // 3rd bit mask for 'C' (011): ~0...0 = 1...1
+	},{
+		0xFFFFFFFF, // 1st bit mask for 'G' (100): ~0...0 = 1...1
+		0xFFFFFFFF, // 2nd bit mask for 'G' (100): ~0...0 = 1...1
+		0x00000000  // 3rd bit mask for 'G' (100): ~1...1 = 0...0
+	},{
+		0x00000000, // 1st bit mask for 'T' (101): ~1...1 = 0...0
+		0xFFFFFFFF, // 2nd bit mask for 'T' (101): ~0...0 = 1...1
+		0x00000000  // 3rd bit mask for 'T' (101): ~1...1 = 0...0
+	}
 };
-const unsigned int searchOffsetMasks[32] = { // all bits before or at the offset, except 1st one = (((1UL<<(offset+1))-1UL)&(~1UL))
-	0x00000000, // lower 1 letters
-	0x00000002, // lower 2 letters
-	0x00000006, // lower 3 letters
-	0x0000000E, // lower 4 letters
-	0x0000001E, // lower 5 letters
-	0x0000003E, // lower 6 letters
-	0x0000007E, // lower 7 letters
-	0x000000FE, // lower 8 letters
-	0x000001FE, // lower 9 letters
-	0x000003FE, // lower 10 letters
-	0x000007FE, // lower 11 letters
-	0x00000FFE, // lower 12 letters
-	0x00001FFE, // lower 13 letters
-	0x00003FFE, // lower 14 letters
-	0x00007FFE, // lower 15 letters
-	0x0000FFFE, // lower 16 letters
-	0x0001FFFE, // lower 17 letters
-	0x0003FFFE, // lower 18 letters
-	0x0007FFFE, // lower 19 letters
-	0x000FFFFE, // lower 20 letters
-	0x001FFFFE, // lower 21 letters
-	0x003FFFFE, // lower 22 letters
-	0x007FFFFE, // lower 23 letters
-	0x00FFFFFE, // lower 24 letters
-	0x01FFFFFE, // lower 25 letters
-	0x03FFFFFE, // lower 26 letters
-	0x07FFFFFE, // lower 27 letters
-	0x0FFFFFFE, // lower 28 letters
-	0x1FFFFFFE, // lower 29 letters
-	0x3FFFFFFE, // lower 30 letters
-	0x7FFFFFFE, // lower 31 letters
-	0xFFFFFFFE  // lower 32 letters
-};
-const unsigned int firstLetterMask = 0x00000001; // lowest bit
-const unsigned int lastLetterMask  = 0x80000000; // highest bit
-const unsigned int secondLetterMask = 0x00000002; // 2nd lowest bit
-const unsigned int firstHalfLettersMask = 0x0000FFFF; // lowest 16 bits
-const unsigned int lastHalfLettersMask  = 0xFFFF0000; // highest 16 bits
-const unsigned int letterLowBitMasks[6] = {
-	0x00000000, // unused (for '$' (00))
-	0xFFFFFFFF, // unused (for 'N' (01))
-	0x00000000, // 1st bit mask for 'A' (00): 0...0
-	0xFFFFFFFF, // 1st bit mask for 'C' (01): 1...1
-	0x00000000, // 1st bit mask for 'G' (10): 0...0
-	0xFFFFFFFF  // 1st bit mask for 'T' (11): 1...1
-};
-const unsigned int letterHighBitMasks[6] = {
-	0x00000000, // unused (for '$' (00))
-	0x00000000, // unused (for 'N' (01))
-	0x00000000, // 2nd bit mask for 'A' (00): 0...0
-	0x00000000, // 2nd bit mask for 'C' (01): 0...0
-	0xFFFFFFFF, // 2nd bit mask for 'G' (10): 1...1
-	0xFFFFFFFF  // 2nd bit mask for 'T' (11): 1...1
-};
-const unsigned int inverseLetterLowBitMasks[6] = {
-	0xFFFFFFFF, // unused (for '$' (00))
-	0x00000000, // unused (for 'N' (01))
-	0xFFFFFFFF, // 1st bit mask for 'A' (00): ~0...0 = 1...1
-	0x00000000, // 1st bit mask for 'C' (01): ~1...1 = 0...0
-	0xFFFFFFFF, // 1st bit mask for 'G' (10): ~0...0 = 1...1
-	0x00000000  // 1st bit mask for 'T' (11): ~1...1 = 0...0
-};
-const unsigned int inverseLetterHighBitMasks[6] = {
-	0xFFFFFFFF, // unused (for '$' (00))
-	0xFFFFFFFF, // unused (for 'N' (01))
-	0xFFFFFFFF, // 2nd bit mask for 'A' (00): ~0...0 = 1...1
-	0xFFFFFFFF, // 2nd bit mask for 'C' (01): ~0...0 = 1...1
-	0x00000000, // 2nd bit mask for 'G' (10): ~1...1 = 0...0
-	0x00000000  // 2nd bit mask for 'T' (11): ~1...1 = 0...0
-};
-const char letterChars[6] = { '$' , 'N' , 'A' , 'C' , 'G' , 'T' }; // get letter char from letter id
-const unsigned int sampleIntervalShift = 5; // sample interval of 32 positions (2^5=32)
-const unsigned int sampleIntervalMask = 0x0000001F; // = ((1<<sampleIntervalShift)-1) = (32-1)
-const unsigned int sampleIntervalSize = 32; // = (1<<sampleIntervalShift) = 32
-const unsigned int sampleIntervalHalfSize = 16; // = (1<<(sampleIntervalShift-1)) = 16
 
-// varibles needed to load/store index
-struct _IndexBlock *Index = NULL;
-unsigned int textSize = 0; // inside the index functions, textSize always counts with the terminator char
-unsigned int numSamples = 0;
-unsigned int lastBwtPos = 0; // position in the BWT of the 0-th entry of the last sample (multiple of 32 to speed up search of 1st char of pattern)
-char *text = NULL;
-struct _PackedNumberArray *packedText = NULL;
-struct _PackedNumberArray *packedBwt = NULL;
-char *textFilename = NULL;
-unsigned char *letterIds = NULL;
+static IndexBlock *Index = NULL;
+static unsigned int bwtSize = 0; // textSize plus counting with the terminator char too
+static unsigned int numSamples = 0;
+static char *text = NULL;
+//static PackedNumberArray *packedText = NULL;
+static PackedNumberArray *packedBwt = NULL;
+static char *textFilename = NULL;
+static unsigned char *letterIds = NULL;
 
+#ifdef BUILD_LCP
+	#ifdef UNBOUNDED_LCP
+	// use array of ints for storing LCP values
+	static int *LCPArray;
+	#else
+	// use array of chars for storing LCP values (truncate to 255)
+	static unsigned char *LCPArray;
+	#endif
+#endif
+
+#ifdef DEBUG_INDEX
+// used to count number of backtracking steps when searching for a text position in function FMI_PositionInText()
+static unsigned int numBackSteps;
+#endif
+
+void InitializeIndexArrays(){
+	int i;
+	letterIds=(unsigned char *)malloc(256*sizeof(unsigned char));
+	for(i=0;i<256;i++) letterIds[i]=(unsigned char)1; // ACGT, N and $
+	letterIds[(int)'\0']=(unsigned char)0;
+	letterIds[(int)'$']=(unsigned char)0;
+	letterIds[(int)'N']=(unsigned char)1;
+	letterIds[(int)'A']=(unsigned char)2;
+	letterIds[(int)'C']=(unsigned char)3;
+	letterIds[(int)'G']=(unsigned char)4;
+	letterIds[(int)'T']=(unsigned char)5;
+	letterIds[(int)'n']=(unsigned char)1;
+	letterIds[(int)'a']=(unsigned char)2;
+	letterIds[(int)'c']=(unsigned char)3;
+	letterIds[(int)'g']=(unsigned char)4;
+	letterIds[(int)'t']=(unsigned char)5;
+	/*
+	unsigned int mask, twoMasks[2];
+	offsetMasks = (unsigned int *)malloc(SAMPLEINTERVALSIZE*sizeof(unsigned int));
+	searchOffsetMasks = (unsigned int *)malloc((SAMPLEINTERVALSIZE+1)*sizeof(unsigned int));
+	searchOffsetMasks[0] = 0x00000000;
+	mask = 0x00000001;
+	for(i=1;i<=SAMPLEINTERVALSIZE;i++){
+		offsetMasks[(i-1)] = mask; // from 0 to 31
+		searchOffsetMasks[i] = ( searchOffsetMasks[(i-1)] | mask ); // from 1 to 32
+		mask = ( mask << 1 );
+	}
+	inverseLetterBitMasks = (unsigned int **)malloc(3*sizeof(unsigned int *));
+	for(i=0;i<3;i++) inverseLetterBitMasks[i] = (unsigned int *)malloc(ALPHABETSIZE*sizeof(unsigned int));
+	twoMasks[0] = 0xFFFFFFFF;
+	twoMasks[1] = 0x00000000;
+	for(i=0;i<ALPHABETSIZE;i++){
+		inverseLetterBitMasks[i][0] = twoMasks[ (i & 0x1) ]; // if 1st bit = 1 , mask = ~0xFFFFFFFF , else mask = ~0x00000000
+		inverseLetterBitMasks[i][1] = twoMasks[ ((i & 0x2) >> 1)  ]; // 2nd bit
+		inverseLetterBitMasks[i][2] = twoMasks[ ((i & 0x4) >> 2)  ]; // 3rd bit
+	}
+	*/
+}
+
+void FMI_FreeIndex(){
+	if(textFilename!=NULL){
+		free(textFilename);
+		textFilename=NULL;
+	}
+	if(Index!=NULL){
+		free(Index);
+		Index=NULL;
+	}
+	if(letterIds!=NULL){
+		free(letterIds);
+		letterIds=NULL;
+	}
+	/*
+	if(offsetMasks!=NULL){
+		free(offsetMasks);
+		offsetMasks=NULL;
+	}
+	if(searchOffsetMasks!=NULL){
+		free(searchOffsetMasks);
+		searchOffsetMasks=NULL;
+	}
+	if(inverseLetterBitMasks!=NULL){
+		for(i=0;i<ALPHABETSIZE;i++) free(inverseLetterBitMasks[i]);
+		free(inverseLetterBitMasks);
+		inverseLetterBitMasks=NULL;
+	}
+	*/
+}
+
+unsigned int FMI_GetTextSize(){
+	return (bwtSize-1); // the bwtSize variable counts the terminator char too
+}
+
+unsigned int FMI_GetBWTSize(){
+	return bwtSize;
+}
+
+char *FMI_GetTextFilename(){
+	return textFilename;
+}
+
+__inline void SetCharAtBWTPos( unsigned int bwtpos , unsigned int charid ){
+	unsigned int sample = ( bwtpos >> SAMPLEINTERVALSHIFT );
+	IndexBlock *block = &(Index[sample]); // get sample block
+	unsigned int offset = ( bwtpos & SAMPLEINTERVALMASK );
+	unsigned int mask = ( ~ offsetMasks[offset] ); // get all bits except the one at the offset
+	unsigned int *letterMasks = (unsigned int *)(inverseLetterBitMasks[charid]);
+	(block->bwtBits[0]) &= mask; // reset bits
+	(block->bwtBits[1]) &= mask;
+	(block->bwtBits[2]) &= mask;
+	mask = offsetMasks[offset]; // get only the bit at the offset
+	(block->bwtBits[0]) |= ( (~letterMasks[0]) & mask ); // set bits
+	(block->bwtBits[1]) |= ( (~letterMasks[1]) & mask );
+	(block->bwtBits[2]) |= ( (~letterMasks[2]) & mask );
+}
+
+__inline unsigned int GetCharIdAtBWTPos( unsigned int bwtpos ){
+	unsigned int sample, offset, mask, charid;
+	IndexBlock *block;
+	sample = ( bwtpos >> SAMPLEINTERVALSHIFT );
+	offset = ( bwtpos & SAMPLEINTERVALMASK );
+	block = &(Index[sample]); // get sample block
+	mask = offsetMasks[offset]; // get only the bit at the offset
+	charid = ( ( (block->bwtBits[0]) >> offset ) & FIRSTLETTERMASK ); // get 1st bit
+	charid |= ( ( ( (block->bwtBits[1]) >> offset ) & FIRSTLETTERMASK ) << 1 ); // get 2nd bit
+	charid |= ( ( ( (block->bwtBits[2]) >> offset ) & FIRSTLETTERMASK ) << 2 ); // get 3rd bit
+	return charid;
+}
+
+__inline char FMI_GetCharAtBWTPos( unsigned int bwtpos ){
+	IndexBlock *block;
+	unsigned int offset, charid;
+	offset = ( bwtpos & SAMPLEINTERVALMASK );
+	block = &(Index[( bwtpos >> SAMPLEINTERVALSHIFT )]); // get sample block
+	charid = ( ( (block->bwtBits[0]) >> offset ) & FIRSTLETTERMASK ); // get 1st bit
+	charid |= ( ( ( (block->bwtBits[1]) >> offset ) & FIRSTLETTERMASK ) << 1 ); // get 2nd bit
+	charid |= ( ( ( (block->bwtBits[2]) >> offset ) & FIRSTLETTERMASK ) << 2 ); // get 3rd bit
+	return LETTERCHARS[charid]; // get letter char
+}
+
+__inline unsigned int BitsSetCount( unsigned int bitArray ){
+	/*
+	while( bitArray ){
+		letterJump++; // if other equal letters exist, increase letter jump
+		bitArray &= ( bitArray - 1U ); // clear lower occurrence bit
+	}
+	*/
+	/*
+	letterJump += perByteCounts[ ( bitArray & 0x000000FF ) ];
+	letterJump += perByteCounts[ ( bitArray & 0x0000FF00 ) >> 8 ];
+	letterJump += perByteCounts[ ( bitArray & 0x00FF0000 ) >> 16 ];
+	letterJump += perByteCounts[ ( bitArray >> 24 ) ];
+	*/
+	//bitArray = ( bitArray & 0x55555555 ) + ( ( bitArray >> 1 ) & 0x55555555 ); // sum blocks of 1 bits ; 0x5 = 0101b ; 2 bits ( final max count = 2 -> 2 bits )
+	bitArray = bitArray - ( ( bitArray >> 1 ) & 0x55555555 );
+	bitArray = ( bitArray & 0x33333333 ) + ( ( bitArray >> 2 ) & 0x33333333 ); // sum blocks of 2 bits ; 0x3 = 0011b ; 4 bits ( final max count = 4 -> 3 bits )
+	bitArray = ( ( bitArray + ( bitArray >> 4 ) ) & 0x0F0F0F0F ); // sum blocks of 4 bits ; 0x0F = 00001111b ; 8 bits ( final max count = 8 -> 4 bits )
+	//bitArray = ( bitArray + ( bitArray >> 8 ) ); // sum blocks of 8 bits ; the final count will be at most 32, which is 6 bits, and since we now have blocks of 8 bits, we can add them without masking because there will not be any overflow
+	//bitArray = ( ( bitArray + ( bitArray >> 16 ) ) & 0x0000003F ); // sum blocks of 16 bits and get the last 6 bits ( final max count = 32 -> 6 bits )
+	bitArray = ( ( bitArray * 0x01010101 ) >> 24 );
+	return bitArray;
+}
+
+// NOTE: if letterId is not at position bwtPos, it considers the jump of the previous occurence behind/above
+// NOTE: it assumes we will never try to do a letter jump by the terminator symbol, since there are no jumps stored in the index for it
+__inline unsigned int FMI_LetterJump( unsigned int letterId , unsigned int bwtPos ){
+	unsigned int offset, bitArray, letterJump, *letterMasks;
+	IndexBlock *block;
+	letterMasks = (unsigned int *)(inverseLetterBitMasks[letterId]);
+	offset = ( bwtPos & SAMPLEINTERVALMASK );
+	block = &(Index[( bwtPos >> SAMPLEINTERVALSHIFT )]);
+	bitArray = searchOffsetMasks[(offset+1)]; // all bits bellow and at offset (+1 otherwise it would not include the bit at the offset)
+	bitArray &= ( (block->bwtBits[0]) ^ letterMasks[0] ); // keep only positions with the same 1st bit
+	bitArray &= ( (block->bwtBits[1]) ^ letterMasks[1] ); // keep only positions with the same 2nd bit
+	bitArray &= ( (block->bwtBits[2]) ^ letterMasks[2] ); // keep only positions with the same 3rd bit
+	letterJump = (block->letterJumpsSample[(letterId-1)]); // get last letter jump before this block (jumps fo '$' are not stored, so it is (letterId-1))
+	#ifdef __GNUC__
+		return ( letterJump + __builtin_popcount( bitArray ) );
+	#else
+		return ( letterJump + BitsSetCount( bitArray ) );
+	#endif
+}
+
+// NOTE: returns the size of the BWT interval if a match exists, and 0 otherwise
+unsigned int FMI_FollowLetter( char c , unsigned int *topPointer , unsigned int *bottomPointer ){
+	/*
+	unsigned int charId;
+	unsigned int originalTopPointer;
+	charId = letterIds[(unsigned char)c];
+	originalTopPointer = (*topPointer);
+	(*topPointer) = FMI_LetterJump( charId , (*topPointer) );
+	if( GetCharIdAtBWTPos( originalTopPointer ) != charId ) (*topPointer)++; // if the letter is not in the topPointer position, its next occurrence is after that
+	(*bottomPointer) = FMI_LetterJump( charId , (*bottomPointer) );
+	*/
+	unsigned int letterId, offset, bitArray, *letterMasks;
+	IndexBlock *block;
+	letterId = letterIds[(unsigned char)c];
+	letterMasks = (unsigned int *)(inverseLetterBitMasks[letterId]);
+	offset = ( (*topPointer) & SAMPLEINTERVALMASK );
+	block = &(Index[( (*topPointer) >> SAMPLEINTERVALSHIFT )]);
+	bitArray = searchOffsetMasks[offset]; // exclusive search mask on top pointer (all bits only bellow offset)
+	bitArray &= ( (block->bwtBits[0]) ^ letterMasks[0] );
+	bitArray &= ( (block->bwtBits[1]) ^ letterMasks[1] );
+	bitArray &= ( (block->bwtBits[2]) ^ letterMasks[2] );
+	(*topPointer) = (block->letterJumpsSample[(letterId-1)]);
+	#ifdef __GNUC__
+		(*topPointer) += __builtin_popcount( bitArray );
+	#else
+		(*topPointer) += BitsSetCount( bitArray );
+	#endif
+	(*topPointer)++; // if the letter is not in the topPointer position, its next occurrence is after that: LF[top]=count(c,(top-1))+1
+	offset = ( (*bottomPointer) & SAMPLEINTERVALMASK );
+	block = &(Index[( (*bottomPointer) >> SAMPLEINTERVALSHIFT )]);
+	bitArray = searchOffsetMasks[(offset+1)]; // inclusive search mask on bottom pointer (all bits bellow and at offset)
+	bitArray &= ( (block->bwtBits[0]) ^ letterMasks[0] );
+	bitArray &= ( (block->bwtBits[1]) ^ letterMasks[1] );
+	bitArray &= ( (block->bwtBits[2]) ^ letterMasks[2] );
+	(*bottomPointer) = (block->letterJumpsSample[(letterId-1)]);
+	#ifdef __GNUC__
+		(*bottomPointer) += __builtin_popcount( bitArray );
+	#else
+		(*bottomPointer) += BitsSetCount( bitArray );
+	#endif
+	if( (*topPointer) > (*bottomPointer) ) return 0;
+	return ( (*bottomPointer) - (*topPointer) + 1 );
+}
+
+unsigned int FMI_PositionInText( unsigned int bwtpos ){
+	unsigned int charid, addpos;
+	addpos = 0;
+	while( bwtpos & SAMPLEINTERVALMASK ){ // move backwards until we land on a position with a sample
+		charid = GetCharIdAtBWTPos(bwtpos);
+		if( charid == 0 ){ // check if this is the terminator char
+			#ifdef DEBUG_INDEX
+			numBackSteps = addpos;
+			#endif
+			return addpos;
+		}
+		bwtpos = FMI_LetterJump( charid , bwtpos ); // follow the left letter backwards
+		addpos++; // one more position away from our original position
+	}
+	#ifdef DEBUG_INDEX
+	numBackSteps = addpos;
+	#endif
+	return ( (Index[( bwtpos >> SAMPLEINTERVALSHIFT )].textPositionSample) + addpos );
+}
+
+// returns the new position in the BWT array after left jumping by the char at the given BWT position
+unsigned int FMI_LeftJump( unsigned int bwtpos ){
+	unsigned int charid;
+	charid = GetCharIdAtBWTPos( bwtpos );
+	if( charid == 0 ) return 0U; // terminator symbol jumps to the 0-th position of the BWT
+	else return FMI_LetterJump( charid , bwtpos ); // follow the left letter backwards
+}
+
+void FMI_GetCharCountsAtBWTInterval(unsigned int topPtr, unsigned int bottomPtr, int *counts){
+	unsigned int offset, charid;
+	IndexBlock *block;
+	counts[0] = 0; // reset counts for chars: A,C,G,T,N
+	counts[1] = 0;
+	counts[2] = 0;
+	counts[3] = 0;
+	counts[4] = 0;
+	block = &(Index[( topPtr >> SAMPLEINTERVALSHIFT )]);
+	offset = ( topPtr & SAMPLEINTERVALMASK );
+	while( topPtr <= bottomPtr ){ // process all positions of interval
+		if( offset == SAMPLEINTERVALSIZE ){ // go to next sample block if needed
+			offset = 0UL;
+			block++;
+		}
+		charid = ( ( (block->bwtBits[0]) >> offset ) & FIRSTLETTERMASK ); // get 1st bit
+		charid |= ( ( ( (block->bwtBits[1]) >> offset ) & FIRSTLETTERMASK ) << 1 ); // get 2nd bit
+		charid |= ( ( ( (block->bwtBits[2]) >> offset ) & FIRSTLETTERMASK ) << 2 ); // get 3rd bit
+		if( charid >= 2 ) counts[(charid - 2)]++; // ACGT
+		else counts[4]++; // '$' or 'N'
+		offset++;
+		topPtr++;
+	}
+}
 
 void PrintUnsignedNumber( unsigned int number ){
 	unsigned int num, denom, quot, rem;
@@ -284,205 +439,6 @@ void PrintUnsignedNumber( unsigned int number ){
 		denom /= 1000;
 	}
 	printf( "%03u" , num );
-}
-
-void SetCharAtBWTPos(unsigned int bwtpos, unsigned int charid){
-	unsigned int sample = ( bwtpos >> sampleIntervalShift );
-	IndexBlock *block = &(Index[sample]); // get sample block
-	unsigned int offset = ( bwtpos & sampleIntervalMask );
-	unsigned int mask = inverseOffsetMasks[offset]; // get all bits except the one at the offset
-	(block->specialLettersMask) &= mask; // reset special letter mark
-	(block->bwtLowBits) &= mask; // reset low bit
-	(block->bwtHighBits) &= mask; // reset high bit
-	mask = offsetMasks[offset]; // get only the bit at the offset
-	if( charid < 2 ) (block->specialLettersMask) |= mask; // set special letter mark if needed (for ids 0 and 1)
-	(block->bwtLowBits) |= ( letterLowBitMasks[charid] & mask ); // set low bit
-	(block->bwtHighBits) |= ( letterHighBitMasks[charid] & mask ); // set high bit
-}
-
-unsigned int GetCharIdAtBWTPos(unsigned int bwtpos){
-	unsigned int sample, offset, mask, charid;
-	IndexBlock *block;
-	sample = ( bwtpos >> sampleIntervalShift );
-	offset = ( bwtpos & sampleIntervalMask );
-	block = &(Index[sample]); // get sample block
-	mask = offsetMasks[offset]; // get only the bit at the offset
-	charid = ( ( (block->bwtLowBits) >> offset ) & firstLetterMask ); // get low bit
-	charid |= ( ( ( (block->bwtHighBits) >> offset ) & firstLetterMask ) << 1 ); // get high bit
-	if( !( (block->specialLettersMask) & mask ) ) charid += 2; // check if special letter bit is set, because regular ids start at id=2
-	return charid;
-}
-
-char FMI_GetCharAtBWTPos(unsigned int bwtpos){
-	IndexBlock *block;
-	unsigned int offset, charid;
-	offset = ( bwtpos & sampleIntervalMask );
-	block = &(Index[( bwtpos >> sampleIntervalShift )]); // get sample block
-	charid = ( ( (block->bwtLowBits) >> offset ) & firstLetterMask ); // get low bit
-	charid |= ( ( ( (block->bwtHighBits) >> offset ) & firstLetterMask ) << 1 ); // get high bit
-	if( (block->specialLettersMask) & offsetMasks[offset] ) return letterChars[charid]; // check if special letter bit is set, because regular ids start at id=2
-	return letterChars[(charid + 2)]; // get letter char
-}
-
-// TODO: check if when calling function counts of letter 'N' are detected at pos 0 or 4
-void FMI_GetCharCountsAtBWTInterval(unsigned int topPtr, unsigned int bottomPtr, int *counts){
-	unsigned int offset, charid;
-	IndexBlock *block;
-	counts[0] = 0; // reset counts for chars: A,C,G,T,N
-	counts[1] = 0;
-	counts[2] = 0;
-	counts[3] = 0;
-	counts[4] = 0;
-	block = &(Index[( topPtr >> sampleIntervalShift )]);
-	offset = ( topPtr & sampleIntervalMask );
-	while( topPtr <= bottomPtr ){ // process all positions of interval
-		if( offset == sampleIntervalSize ){ // go to next sample block if needed
-			offset = 0UL;
-			block++;
-		}
-		charid = ( ( (block->bwtLowBits) >> offset ) & firstLetterMask ); // get low bit
-		charid |= ( ( ( (block->bwtHighBits) >> offset ) & firstLetterMask ) << 1 ); // get high bit
-		if( (block->specialLettersMask) & offsetMasks[offset] ) counts[4]++; // check if special letter bit is set
-		else counts[charid]++;
-		offset++;
-		topPtr++;
-	}
-}
-
-/*
-unsigned int GetRightCharIdAtBWTPos(unsigned int bwtpos){
-	unsigned int charid;
-	charid = 5;
-	while( (charid != 0) && (bwtpos < letterStartPos[charid]) ) charid--;
-	return charid;
-}
-*/
-
-void InitializeLetterIdsArray(){
-	int i;
-	letterIds=(unsigned char *)malloc(256*sizeof(unsigned char));
-	for(i=0;i<256;i++) letterIds[i]=(unsigned char)1; // ACGT, N and $
-	letterIds[(int)'\0']=(unsigned char)0;
-	letterIds[(int)'$']=(unsigned char)0;
-	letterIds[(int)'N']=(unsigned char)1;
-	letterIds[(int)'A']=(unsigned char)2;
-	letterIds[(int)'C']=(unsigned char)3;
-	letterIds[(int)'G']=(unsigned char)4;
-	letterIds[(int)'T']=(unsigned char)5;
-	letterIds[(int)'n']=(unsigned char)1;
-	letterIds[(int)'a']=(unsigned char)2;
-	letterIds[(int)'c']=(unsigned char)3;
-	letterIds[(int)'g']=(unsigned char)4;
-	letterIds[(int)'t']=(unsigned char)5;
-}
-
-unsigned int FMI_GetTextSize(){
-	return (textSize-1); // inside the index functions, the textSize variable counts the terminator char too
-}
-
-unsigned int FMI_GetBWTSize(){
-	return lastBwtPos; // last valid filled position of the BWT (aligned to a multiple of the sample interval)
-}
-
-char *FMI_GetTextFilename(){
-	return textFilename;
-}
-
-// TODO: find way to remove the decrement in letterJumpsSample[(letterId-1)]
-// TODO: move code with the check for special letters to another function, because on normal search we never use jumps by $'s or N's (but on position search, we do by N's)
-unsigned int FMI_LetterJump( unsigned int letterId , unsigned int bwtPos ){
-	unsigned int offset, bitArray, letterJump;
-	IndexBlock *block;
-	block = &(Index[( bwtPos >> sampleIntervalShift )]);
-	offset = ( bwtPos & sampleIntervalMask );
-	bitArray = searchOffsetMasks[offset]; // all bits bellow offset, except 1st one
-	if( letterId < 2 ) bitArray &= (block->specialLettersMask); // if we are looking for '$' or 'N', keep only special chars
-	else bitArray &= ( ~ (block->specialLettersMask) ); // remove special chars
-	bitArray &= ( (block->bwtLowBits) ^ inverseLetterLowBitMasks[letterId] ); // keep only ones with the same low bit
-	bitArray &= ( (block->bwtHighBits) ^ inverseLetterHighBitMasks[letterId] ); // keep only ones with the same high bit
-	letterJump = (block->letterJumpsSample[(letterId-1)]); // get top letter jump
-	while( bitArray ){
-		letterJump++; // if other equal letter exist, increase letter jump
-		bitArray &= ( bitArray - 1U ); // clear lower occurrence bit
-	}
-	return letterJump;
-}
-
-// TODO: find better way to deal with original toppointer value
-// TODO: move code of called functions inside and reuse variables for speed up
-// NOTE: returns the size of the BWT interval if a match exists, and 0 otherwise
-unsigned int FMI_FollowLetter( char c , unsigned int *topPointer , unsigned int *bottomPointer ){
-	unsigned int charid, originaltoppointer;
-	originaltoppointer = (*topPointer);
-	charid = letterIds[(int)c];
-	(*topPointer) = FMI_LetterJump( charid , originaltoppointer );
-	if( GetCharIdAtBWTPos(originaltoppointer) != charid ) (*topPointer)++; // if the letter is not in the topPointer position (the initial, not the updated one), its next occurrence is after that
-	(*bottomPointer) = FMI_LetterJump( charid , (*bottomPointer) );
-	if( (*topPointer) > (*bottomPointer) ) return 0;
-	return ( (*bottomPointer) - (*topPointer) + 1 );
-	/*
-	unsigned int bwtPos, letterId, offset, bitArray, letterJump;
-	IndexBlock *block;
-	letterId = letterIds[c];
-	bwtPos = (*topPointer); // process top pointer
-	block = &(Index[( bwtPos >> sampleIntervalShift )]); // get sample block
-	bitArray = ( ~ (block->specialLettersMask) ); // remove special chars
-	bitArray &= ( (block->bwtLowBits) ^ inverseLetterLowBitMasks[letterId] ); // keep only ones with the same low bit
-	bitArray &= ( (block->bwtHighBits) ^ inverseLetterHighBitMasks[letterId] ); // keep only ones with the same high bit
-	letterJump = (block->letterJumpsSample[letterId]); // get top letter jump
-	offset = ( bwtPos & sampleIntervalMask ); // get offset inside sample
-	if( !( bitArray & offsetMasks[offset] ) ) letterJump++; // if the letter is not in the topPointer position, its next occurrence is bellow that
-	bitArray &= searchOffsetMasks[offset]; // keep all bits bellow offset, except 1st one
-	while( bitArray ){ // while there are occurrences of this letter in the interval
-		letterJump++; // if other equal letter exist, increase letter jump
-		bitArray &= ( bitArray - 1U ); // clear lower occurrence bit
-	}
-	(*topPointer) = letterJump;
-	bwtPos = (*bottomPointer); // process bottom pointer
-	block = &(Index[( bwtPos >> sampleIntervalShift )]);
-	offset = ( bwtPos & sampleIntervalMask );
-	bitArray = searchOffsetMasks[offset]; // all bits bellow offset, except 1st one
-	bitArray &= ( ~ (block->specialLettersMask) ); // remove special chars
-	bitArray &= ( (block->bwtLowBits) ^ inverseLetterLowBitMasks[letterId] ); // keep only ones with the same low bit
-	bitArray &= ( (block->bwtHighBits) ^ inverseLetterHighBitMasks[letterId] ); // keep only ones with the same high bit
-	letterJump = (block->letterJumpsSample[letterId]); // get top letter jump
-	while( bitArray ){
-		letterJump++; // if other equal letter exist, increase letter jump
-		bitArray &= ( bitArray - 1U ); // clear lower occurrence bit
-	}
-	(*bottomPointer) = letterJump;
-	if( (*topPointer) > (*bottomPointer) ) return 0;
-	return ( (*bottomPointer) - (*topPointer) + 1 );
-	*/
-}
-
-// TODO: move code of called functions inside and reuse variables for speed up
-unsigned int FMI_PositionInText( unsigned int bwtpos ){
-	unsigned int charid, addpos;
-	addpos = 0;
-	while( bwtpos & sampleIntervalMask ){ // move backwards until we land on a position with a sample
-		charid = GetCharIdAtBWTPos(bwtpos);
-		if( charid == 0 ){ // check if this is the terminator char
-			#ifdef DEBUG_INDEX
-			numBackSteps = addpos;
-			#endif
-			return addpos;
-		}
-		bwtpos = FMI_LetterJump( charid , bwtpos ); // follow the left letter backwards
-		addpos++; // one more position away from our original position
-	}
-	#ifdef DEBUG_INDEX
-	numBackSteps = addpos;
-	#endif
-	return ( (Index[( bwtpos >> sampleIntervalShift )].textPositionSample) + addpos );
-}
-
-// returns the new position in the BWT array after left jumping by the char at the given BWT position
-unsigned int FMI_LeftJump( unsigned int bwtpos ){
-	unsigned int charid;
-	charid = GetCharIdAtBWTPos(bwtpos);
-	if( charid == 0 ) return 0U;
-	else return FMI_LetterJump( charid , bwtpos ); // follow the left letter backwards
 }
 
 /*
@@ -531,8 +487,8 @@ void FMI_LoadIndex(char *indexfilename){
 	printf("\n  [textFilename=\"%s\";textSize=%u;numSamples=%u]",textFilename,textSize,numSamples);
 	fflush(stdout);
 	#endif
-	i = ( ( ( textSize-1 ) >> sampleIntervalShift ) + 1 );
-	if( ((textSize-1) & sampleIntervalMask) != 0 ) i++; // extra sample
+	i = ( ( ( textSize-1 ) >> SAMPLEINTERVALSHIFT ) + 1 );
+	if( ((textSize-1) & SAMPLEINTERVALMASK) != 0 ) i++; // extra sample
 	if( numSamples != i ){ // check if number of samples is correct based on text size
 		printf("\n> ERROR: Invalid index data\n");
 		exit(0);
@@ -549,12 +505,12 @@ void FMI_LoadIndex(char *indexfilename){
 	}
 	fclose(indexfile);
 	InitializeLetterIdsArray(); // initialize arrays used by index functions
-	lastBwtPos = ((numSamples-1) << sampleIntervalShift); // set last BWT pos for pattern matching initialization
+	lastAlignedBwtPos = ((numSamples-1) << SAMPLEINTERVALSHIFT); // set last BWT pos for pattern matching initialization
 	printf(" OK\n");
 	fflush(stdout);
 }
 
-// TODO: use indexBlocksStartInFile, distanceToNextBlockBits
+// TODO: ??? use indexBlocksStartInFile, distanceToNextBlockBits
 void FMI_SaveIndex(char *indexfilename){
 	FILE *indexfile;
 	size_t writecount;
@@ -586,39 +542,24 @@ void FMI_SaveIndex(char *indexfilename){
 }
 */
 
-void FMI_FreeIndex(){
-	if(textFilename!=NULL){
-		free(textFilename);
-		textFilename=NULL;
-	}
-	if(Index!=NULL){
-		free(Index);
-		Index=NULL;
-	}
-	if(letterIds!=NULL){
-		free(letterIds);
-		letterIds=NULL;
-	}
-}
-
 void PrintBWT(char *text, unsigned int *letterStartPos){
 	unsigned int i, n, p;
-	printf("%u {", textSize );
+	printf("%u {", bwtSize );
 	for( n = 1 ; n < ALPHABETSIZE ; n++ ){
-		printf(" %c [%02u-%02u] %c", letterChars[n] , letterStartPos[n] , (n==(ALPHABETSIZE-1))?(textSize-1):(letterStartPos[(n+1)]-1) , (n==(ALPHABETSIZE-1))?'}':',' );
+		printf(" %c [%02u-%02u] %c", LETTERCHARS[n] , letterStartPos[n] , (n==(ALPHABETSIZE-1))?(bwtSize-1):(letterStartPos[(n+1)]-1) , (n==(ALPHABETSIZE-1))?'}':',' );
 	}
-	printf(" 2^%u=%u %u %#.8X\n", sampleIntervalShift , sampleIntervalSize , numSamples , sampleIntervalMask );
+	printf(" 2^%u=%u %u %#.8X\n", SAMPLEINTERVALSHIFT , SAMPLEINTERVALSIZE , numSamples , SAMPLEINTERVALMASK );
 	printf("[ i] (SA) {");
 	for( n = 1 ; n < ALPHABETSIZE ; n++ ){
-		printf(" %c%c", letterChars[n] , (n==(ALPHABETSIZE-1))?'}':',' );
+		printf(" %c%c", LETTERCHARS[n] , (n==(ALPHABETSIZE-1))?'}':',' );
 	}
 	#ifdef BUILD_LCP
 	if( LCPArray != NULL ) printf(" LCP");
 	#endif
 	printf(" BWT\n");
-	for( i = 0 ; i < textSize ; i++ ){ // position in BWT
+	for( i = 0 ; i < bwtSize ; i++ ){ // position in BWT
 		p = FMI_PositionInText( i );
-		printf("[%02u]%c(%2u) {", i , (i & sampleIntervalMask)?' ':'*' , p );
+		printf("[%02u]%c(%2u) {", i , (i & SAMPLEINTERVALMASK)?' ':'*' , p );
 		for( n = 1 ; n < ALPHABETSIZE ; n++ ){
 			printf("%02u%c", FMI_LetterJump( n , i ) , (n==(ALPHABETSIZE-1))?'}':',' );
 		}
@@ -628,515 +569,19 @@ void PrintBWT(char *text, unsigned int *letterStartPos){
 		printf(" %c ", FMI_GetCharAtBWTPos(i) );
 		n = 0;
 		while( ( n < (ALPHABETSIZE-1) ) && ( i >= letterStartPos[(n+1)] ) ) n++;
-		printf(" %c ", letterChars[n] );
-		if( p != (textSize-1) ) p++;
+		printf(" %c ", LETTERCHARS[n] );
+		if( p != (bwtSize-1) ) p++; // char at the right of the BWT char
 		else p = 0;
 		if( text != NULL ) printf("%s", (char *)(text+p) );
 		printf("\n");
 	}
 }
 
+// Function pointer to get char id at corresponding text position
+unsigned int (*GetTextCharId)(unsigned int);
 
-typedef struct _PackedNumberArray {
-	unsigned long long *bitsArray;
-	unsigned char bitsPerInt;
-	unsigned int numWords;
-	//unsigned char bitsPerWord; // = 64
-} PackedNumberArray;
-
-PackedNumberArray *NewPackedNumberArray(unsigned int numInts, unsigned int maxInt){
-	PackedNumberArray *intArray;
-	unsigned long long numBits;
-	unsigned int n;
-	intArray = (PackedNumberArray *)malloc(sizeof(PackedNumberArray));
-	//(intArray->bitsPerWord) = (unsigned char)(sizeof(unsigned long long)*8); // use 64 bit words (8 bytes * 8 bits/byte)
-	n = 1; // number of bits needed to store one number
-	while( ( (1UL << n) - 1 ) < maxInt ) n++; // n bits per number (stores 2^n numbers, but the last one is (2^n-1))
-	(intArray->bitsPerInt) = (unsigned char)n;
-	numBits = ( ((unsigned long long)numInts) * ((unsigned long long)n) ); // total number of bits occupied by all the numbers
-	if( numBits != 0) numBits--; // if it was a multiple of 64 , it would create an extra unused word
-	n = (unsigned int)( (numBits/64ULL) + 1ULL); // number of 64 bit words required to store (numInts) numbers of (bitsPerInt) bits each
-	(intArray->numWords) = n;
-	(intArray->bitsArray) = (unsigned long long *)calloc(n,sizeof(unsigned long long)); // bit array that will store the numbers
-	return intArray;
-}
-
-void FreePackedNumberArray(PackedNumberArray *intArray){
-	free(intArray->bitsArray);
-	free(intArray);
-}
-
-void ResetPackedNumberArray(PackedNumberArray *intArray){
-	unsigned int n;
-	n = (intArray->numWords);
-	while( n != 0 ) (intArray->bitsArray)[(--n)] = 0ULL;
-}
-
-unsigned int GetPackedNumber(PackedNumberArray *intArray, unsigned int pos){
-	unsigned char offset, bitsPerInt;
-	unsigned long long temp;
-	unsigned int number;
-	bitsPerInt = (intArray->bitsPerInt);
-	temp = ((unsigned long long)(pos)) * ((unsigned long long)(bitsPerInt)); // number of bits
-	offset = (unsigned char)( temp & 63ULL ); // mask by (64-1) to get position of 1st bit inside the word
-	pos = (unsigned int)( temp >> 6 ); // divide by 64 to get word position inside bit array
-	temp = ( ( 1ULL << bitsPerInt ) - 1ULL ); // mask for the n bits of each number
-	number = (unsigned int)( ( (intArray->bitsArray)[pos] >> offset ) & temp );
-	offset = ( 64 - offset ); // check if the bits of the number extend to the next word (get number of bits left until the end of this word)
-	if( offset < bitsPerInt ) number |= (unsigned int)( ( (intArray->bitsArray)[(++pos)] << offset ) & temp );
-	return number;
-}
-
-void SetPackedNumber(PackedNumberArray *intArray, unsigned int pos, unsigned int num){
-	unsigned char offset, bitsPerInt;
-	unsigned long long temp;
-	bitsPerInt = (intArray->bitsPerInt);
-	temp = ((unsigned long long)(pos)) * ((unsigned long long)(bitsPerInt)); // number of bits
-	offset = (unsigned char)( temp & 63ULL ); // mask by (64-1) to get position of 1st bit inside the word
-	pos = (unsigned int)( temp >> 6 ); // divide by 64 to get word position inside bit array
-	(intArray->bitsArray)[pos] |= ( ((unsigned long long)num) << offset );
-	offset = ( 64 - offset ); // check if the bits of the number extend to the next word (get number of bits left until the end of this word)
-	if( offset < bitsPerInt ) (intArray->bitsArray)[(++pos)] |= ( ((unsigned long long)num) >> offset );
-}
-
-void ReplacePackedNumber(PackedNumberArray *intArray, unsigned int pos, unsigned int num){
-	unsigned char offset, bitsPerInt;
-	unsigned long long temp;
-	bitsPerInt = (intArray->bitsPerInt);
-	temp = ((unsigned long long)(pos)) * ((unsigned long long)(bitsPerInt)); // number of bits
-	offset = (unsigned char)( temp & 63ULL ); // mask by (64-1) to get position of 1st bit inside the word
-	pos = (unsigned int)( temp >> 6 ); // divide by 64 to get word position inside bit array
-	temp = ( ((unsigned long long)num) << offset ); // rightmost bits to set
-	(intArray->bitsArray)[pos] &= temp; // only keep common 1 bits
-	(intArray->bitsArray)[pos] |= temp; // set the missing 1 bits (same as reset and then set)
-	offset = ( 64 - offset ); // check if the bits of the number extend to the next word (get number of bits left until the end of this word)
-	if( offset < bitsPerInt ){
-		pos++; // next word
-		temp = ( ((unsigned long long)num) >> offset ); // leftmost bits to set
-		(intArray->bitsArray)[pos] &= temp; // only keep common 1 bits
-		(intArray->bitsArray)[pos] |= temp; // set the missing 1 bits (same as reset and then set)
-	}
-}
-
-typedef struct _PackedIncreasingNumberArray {
-	unsigned char numTotalBits;
-	unsigned char numHighBits;
-	unsigned char numLowBits;
-	unsigned int highBitsMask;
-	unsigned int lowBitsMask;
-	unsigned int *highLimits;
-	PackedNumberArray *lowBits;
-} PackedIncreasingNumberArray;
-
-// TODO: check and fix calculation of optimal number of high/low bits
-PackedIncreasingNumberArray *NewPackedIncreasingNumberArray(unsigned int numInts, unsigned int maxInt){
-	PackedIncreasingNumberArray *incIntArray;
-	unsigned long long numBits;
-	unsigned int k;
-	unsigned char n;
-	incIntArray = (PackedIncreasingNumberArray *)malloc(sizeof(PackedIncreasingNumberArray));
-	//k = (unsigned int)(sizeof(unsigned int)*8); // use 32 bits words
-	numBits = (unsigned long long)(numInts*32); // total number of bits to store all the words regularly
-	n = 0; // get best number of high bits to compact
-	while( (((1ULL << n)-1ULL)*32ULL) < numBits ) n++; // for compacting n high bits we need (2^n-1) extra numbers
-	if( n != 0 ) n--; // the current value already exceeded the regular size
-	(incIntArray->numHighBits) = n;
-	n = 0; // number of bits per number
-	k = 1; // power of two (2^n)
-	while( k && ( (k-1) < maxInt ) ){ // (2^n-1) is the largest number that can be represented by n bits
-		n++;
-		k <<= 1;
-	}
-	if( k != 0 ) k--; // mask for all bits
-	else k = (~k); // n = 32, whole word (~0UL)
-	(incIntArray->numTotalBits) = n; // total bits of each number
-	n -= (incIntArray->numHighBits); // number of lower bits
-	(incIntArray->numLowBits) = n;
-	(incIntArray->lowBitsMask) = ( (1UL << n) - 1UL ); // mask for lower bits
-	(incIntArray->highBitsMask) = ( k ^ (incIntArray->lowBitsMask) ); // all bits of number except the low ones
-	k = ( ( 1UL << (incIntArray->numHighBits) ) - 1UL ); // number of limits needed for compacting the high bits
-	(incIntArray->highLimits) = (unsigned int *)calloc(k,sizeof(unsigned int));
-	k = ( ( 1UL << (incIntArray->numLowBits) ) - 1UL ); // highest number representable by the low bits
-	(incIntArray->lowBits) = NewPackedNumberArray(numInts,k);
-	return incIntArray;
-}
-
-void FreePackedIncreasingNumberArray(PackedIncreasingNumberArray *incIntArray){
-	FreePackedNumberArray(incIntArray->lowBits);
-	free(incIntArray->highLimits);
-	free(incIntArray);
-}
-
-void ResetPackedIncreasingNumberArray(PackedIncreasingNumberArray *incIntArray){
-	unsigned int n;
-	n = ( ( 1UL << (incIntArray->numHighBits) ) - 1UL ); // number of limits used
-	while( n != 0 ) (incIntArray->highLimits)[(--n)] = 0UL;
-	ResetPackedNumberArray(incIntArray->lowBits);
-}
-
-unsigned int GetPackedIncreasingNumber(PackedIncreasingNumberArray *incIntArray, unsigned int pos){
-	unsigned char n;
-	unsigned int number, limit, i, k;
-	number = 0UL;
-	i = pos; // position in the increasing numbers array
-	k = 0; // current position in the limits array
-	n = (incIntArray->numHighBits); // current high bit
-	while( n && i ){
-		limit = (incIntArray->highLimits)[k];
-		if( i < limit ){ // bit 0, and advance to limit (2*k+1)
-			k <<= 1;
-			k++;
-		} else { // bit 1, and advance to limit (2*(k+1))
-			k++;
-			k <<= 1;
-			i -= limit; // fix array position relative to the current limit
-			number++; // the number has a bit 1 at this position
-		}
-		n--;
-		number <<= 1; // go to next bit of number
-	}
-	number <<= n; // if we didn't check all high bits, shift the number correctly
-	return ( ( number << (incIntArray->numLowBits) ) | GetPackedNumber((incIntArray->lowBits),pos) );
-}
-
-void SetPackedIncreasingNumber(PackedIncreasingNumberArray *incIntArray, unsigned int pos, unsigned int num){
-	unsigned char n;
-	unsigned int mask, k;
-	mask = (1UL << ((incIntArray->numTotalBits)-1)); // mask for the highest/leftmost bit of the number
-	k = 0; // current position in the limits array
-	n = (incIntArray->numHighBits); // current high bits count
-	while( n > 0 ){
-		if( num & mask ){ // bit 1, and advance to limit (2*(k+1))
-			k++;
-			k <<= 1;
-		} else { // bit 0, and advance to limit (2*k+1)
-			((incIntArray->highLimits)[k])++; // increase limit count
-			k <<= 1;
-			k++;
-		}
-		n--;
-		mask >>= 1; // process next bit at the right
-	}
-	SetPackedNumber((incIntArray->lowBits),pos,(num & (incIntArray->lowBitsMask)));
-}
-
-/*
-void PrintISState( char *header, PackedNumberArray *text , unsigned int *posLMS , unsigned int *charTypes , unsigned int textSize , int alphabetSize , unsigned int *usedLMS, int level ){
-	unsigned int n;
-	int i,j,k;
-	if(topLMS[0]!=(-1)){ // S-type suffixes
-		printf("\n%s\n",header);
-		for(i=0;i<16;i++) putchar('-'); putchar('\n');
-		k=0;
-		for(j=0;j<alphabetSize;j++){
-			i=topLMS[j];
-			while(i!=(-1)){
-				n=posLMS[i];
-				printf("[%02d]{%02d} %c %02u %c",k,i,GETCHARTYPE(charTypes,n),n,((usedLMS && GETBIT(usedLMS,i))?'*':' '));
-				if(level){
-					printf("(%02u)",GetPackedNumber(text,n)); n++;
-					if(n==textSize) n=0;
-					while(GETCHARTYPE(charTypes,n)!='S'){ printf("(%02u)",GetPackedNumber(text,n)); n++; }
-					printf("(%02u)",GetPackedNumber(text,n));
-				} else {
-					printf("%c",letterChars[GetPackedNumber(text,n)]); n++;
-					if(n==textSize) n=0;
-					while(GETCHARTYPE(charTypes,n)!='S'){ printf("%c",letterChars[GetPackedNumber(text,n)]); n++; }
-					printf("%c",letterChars[GetPackedNumber(text,n)]);
-				}
-				putchar('\n');
-				i=nextId[i];
-				k++;
-			}
-			for(i=0;i<16;i++) putchar('-'); putchar('\n');
-		}
-	} else { // L-type suffixes
-		printf("\n%s\n",header);
-		for(i=0;i<16;i++) putchar('-'); putchar('\n');
-		k=0;
-		for(j=alphabetSize;j!=0;){
-			j--;
-			i=bottomLML[j];
-			while(i!=(-1)){
-				n=posLMS[i];
-				printf("[%02d]{%02d} %c %02u %c",k,i,GETCHARTYPE(charTypes,n),n,((usedLMS && GETBIT(usedLMS,i))?'*':' '));
-				if(level){
-					printf("(%02u)",GetPackedNumber(text,n)); n++;
-					if(n==textSize) n=0;
-					while(GETCHARTYPE(charTypes,n)!='S'){ printf("(%02u)",GetPackedNumber(text,n)); n++; }
-					printf("(%02u)",GetPackedNumber(text,n));
-				} else {
-					printf("%c",letterChars[GetPackedNumber(text,n)]); n++;
-					if(n==textSize) n=0;
-					while(GETCHARTYPE(charTypes,n)!='S'){ printf("%c",letterChars[GetPackedNumber(text,n)]); n++; }
-					printf("%c",letterChars[GetPackedNumber(text,n)]);
-				}
-				putchar('\n');
-				i=nextId[i];
-				k++;
-			}
-			for(i=0;i<16;i++) putchar('-'); putchar('\n');
-		}
-	}
-}
-*/
-
-// TODO: add argument and code to get text from file and directly convert it to packed binary
-// TODO: change LoadReference function to use filename stored in index
-// TODO: on multiple references, add special char to separate them
-// TODO: use type double/float for variables used in statistics at the end
-// TODO: use inverse of speciallettersmask to prevent extra "~" operation
-// TODO: replace original letter*BitsMask arrays by ~inverseLetter*BitsMask
-// TODO: move global variables that are not needed for searching, to inside this function
-// TODO: initialize mask arrays instead of storing them explicitly
-// TODO: in main functions, replace array fetches by defines with the shifts to see if it's faster
-// TODO: check speed of FMI_LetterJump with only half 16bits counts
-void FMI_BuildIndex(char *text, int size, char verbose){
-	text=NULL;
-	size=0;
-	verbose='\0';
-	return;
-/*
-	char *textPtr, c;
-	unsigned int letterId, i, k, n;
-	unsigned int bwtPos, samplePos, textPos;
-	unsigned int progressCounter, progressStep;
-	unsigned int letterCounts[6], letterStartPos[6];
-	PackedNumberArray *textArray;
-	IndexBlock *block;
-	if(verbose){
-		printf("> Processing reference chars ... ");
-		fflush(stdout);
-	}
-	textArray = NewPackedNumberArray((size+1),6); // bit array that stores all the chars of the text (plus terminator) in packed bits form
-	if(textArray==NULL){
-		printf("\n> ERROR: Not enough memory\n");
-		exit(-1);
-	}
-	InitializeLetterIdsArray(); // initialize letter ids array
-	for(i=0;i<6;i++) letterCounts[i]=0; // reset counts for each letter (ACGTN)
-	textSize=0; // counts all letters plus one sequence terminator symbol
-	for(i=0;i<(unsigned int)size;i++){
-		c=text[i];
-		letterId = (unsigned int)letterIds[(int)c]; // get id of this letter
-		letterCounts[letterId]++; // increase count of this letter
-		textSize++; // one more text char
-		if(textSize==UINT_MAX) break; // prevent overflow
-		SetPackedNumber(textArray,i,letterId);
-	}
-	SetPackedNumber(textArray,i,0); // set terminator char (id=0) at the end
-	if(textSize==0){
-		printf("\n> ERROR: No valid characters found\n");
-		exit(-1);
-	}
-	if(textSize==UINT_MAX){
-		printf("\n> ERROR: Maximum reference size exceeded\n");
-		exit(-1);
-	}
-	k=letterCounts[1]; // number of invalid chars ('N's)
-	if(verbose){
-		if(k>0) { printf("(");PrintUnsignedNumber(k);printf(" N's) "); }
-		printf("(");PrintUnsignedNumber(textSize);printf(" basepairs) OK\n"); // number of valid chars (not including sequence terminator)
-		printf("> Building BWT ");
-		fflush(stdout);
-	}
-	letterCounts[0]++; // terminator char
-	textSize++; // count terminator char
-	BWTIS( textArray , textSize , 6 , 0 , verbose );
-	FreePackedNumberArray(textArray); // the packed text array is not needed anymore, only the BWT array
-	if(verbose){
-		printf(" OK\n");
-		printf("> Allocating memory space for index ... ");
-		fflush(stdout);
-	}
-	numSamples = ( ( ( textSize - 1 ) >> sampleIntervalShift ) + 1 ); // blocks of 32 chars (if textSize was a multiple of 32 it needed +1 additional unused sample, because last used pos is (textSize-1))
-	if( ((textSize-1) & sampleIntervalMask) != 0 ) numSamples++; // if the last used position does not fall over a sample (0-th position), add an extra sample after the end (to speed up letter counts on 1st char of pattern search)
-	lastBwtPos = ((numSamples-1) << sampleIntervalShift); // so that when getting the sample for this position, if falls in the 0-th pos of the last sample (numSamples-1)
-	Index=(IndexBlock *)malloc(numSamples*sizeof(IndexBlock));
-	if(Index==NULL){
-		printf("\n> ERROR: Not enough memory\n");
-		exit(0);
-	}
-	if(verbose){
-		printf("(%u MB) ",( (unsigned int)((numSamples)*sizeof(IndexBlock))/1000000));
-		printf("OK\n");
-		printf("> Collecting letter jump samples ");
-		fflush(stdout);	
-	}
-	letterStartPos[0]=0; // the terminator char is at the top (0-th) position of the BWT (but on the right)
-	for(i=1;i<6;i++) letterStartPos[i]=(letterStartPos[(i-1)]+letterCounts[(i-1)]); // where previous letter starts plus number of previous letter occurrences
-	for(i=1;i<6;i++) letterCounts[i] = (letterStartPos[i]-1); // initialize all letter jumps with the position before the start of the letter
-	progressStep=(textSize/10);
-	progressCounter=0;
-	samplePos = 0; // start in top position of the BWT and go down
-	for( n = 0 ; n < textSize ; n++ ){
-		if(verbose){
-			progressCounter++;
-			if(progressCounter==progressStep){ // print progress dots
-				printf(".");
-				fflush(stdout);
-				progressCounter=0;
-			}
-		}
-		letterId = GetPackedNumber(bwtArray,n);
-		letterCounts[letterId]++;
-		if( ( n & sampleIntervalMask ) == 0 ){ // if we are over a sample, store here the current letter counts
-			block = &(Index[samplePos]);
-			(block->bwtLowBits) = 0U; // reset block
-			(block->bwtHighBits) = 0U;
-			(block->specialLettersMask) = 0U;
-			for(i=1;i<6;i++) (block->letterJumpsSample[(i-1)]) = letterCounts[i]; // the i-th letter here is the (i-1)-th letter in the index
-			samplePos++;
-		}
-		SetCharAtBWTPos(n,letterId); // copy the current letter from the packed BWT to the BWT in the index
-	}
-	if( ((textSize-1) & sampleIntervalMask) != 0 ){ // if one last extra sample was added at the end, fill it too
-		block = &(Index[samplePos]);
-		(block->bwtLowBits) = 0U; // reset block
-		(block->bwtHighBits) = 0U;
-		(block->specialLettersMask) = (~0U); // set special letters block to prevent confusing with real letters
-		for(i=1;i<6;i++) (block->letterJumpsSample[(i-1)]) = letterCounts[i];
-	}
-	FreePackedNumberArray(bwtArray); // the packed BWT array is not needed anymore
-	if(verbose){
-		printf(" OK\n");
-		printf("> Collecting position samples ");
-		fflush(stdout);
-	}
-	textPos=(textSize-1); // start at the terminator char (first text position is 0)
-	n=0; // start at the first/topmost BWT position
-	progressStep=(textSize/10);
-	progressCounter=0;
-	while(1){
-		if(verbose){
-			progressCounter++;
-			if(progressCounter==progressStep){ // print progress dots
-				printf(".");
-				fflush(stdout);
-				progressCounter=0;
-			}
-		}
-		if( ( n & sampleIntervalMask ) == 0 ){ // if we are over a sample, store here the current position of the text
-			samplePos = ( n >> sampleIntervalShift );
-			(Index[samplePos].textPositionSample) = textPos;
-		}
-		if(textPos==0) break;
-		i = GetCharIdAtBWTPos(n); // get char at this BWT position (in the left)
-		n = FMI_LetterJump(i,n); // follow the letter backwards to go to next position in the BWT
-		textPos--;
-	}
-	if(verbose){
-		printf(" OK\n");
-		fflush(stdout);
-	}
-	bwtPos=0; // just so compiler does not complain
-	textPtr=NULL;
-	#ifdef DEBUG
-	if(textSize<100) PrintBWT(text,letterStartPos);
-	if(verbose){
-		printf("> Checking BWT sort ");
-		fflush(stdout);
-	}
-	progressCounter=0;
-	k = FMI_PositionInText(0); // position in the text of the top BWT position (should be equal to (textSize-1))
-	for(bwtPos=1;bwtPos<textSize;bwtPos++){ // compare current position with position above
-		if(verbose){
-			progressCounter++;
-			if(progressCounter==progressStep){ // print progress dots
-				printf(".");
-				fflush(stdout);
-				progressCounter=0;
-			}
-		}
-		i = FMI_PositionInText(bwtPos); // position in the text of the suffix in this row
-		n = 0; // current suffix depth
-		while( text[(k+n)] == text[(i+n)] ) n++; // keep following suffix chars to the right while their letters are equal
-		if( letterIds[(int)(text[(k+n)])] > letterIds[(int)(text[(i+n)])] ) break; // if the top letter is larger than the bottom letter, it is incorrectly sorted
-		k = i; // current pos will be prev pos in next step
-	}
-	if(bwtPos!=textSize){
-		printf(" FAILED (error at BWT position %u)\n",bwtPos);
-		exit(-1);
-	}
-	if(verbose){
-		printf(" OK\n");
-		printf("> Checking jump samples ");
-		fflush(stdout);
-	}
-	for(i=0;i<6;i++){ // initialize counters
-		if(letterStartPos[i]!=0) letterCounts[i]=(letterStartPos[i]-1);
-		else letterCounts[i]=0;
-	}
-	progressCounter=0;
-	for(n=0;n<textSize;n++){
-		if(verbose){
-			progressCounter++;
-			if(progressCounter==progressStep){ // print progress dots
-				printf(".");
-				fflush(stdout);
-				progressCounter=0;
-			}
-		}
-		i=GetCharIdAtBWTPos(n); // get letter and update count
-		if(i!=0){ // check if it is the terminator char because we cannot jump by it
-			letterCounts[i]++;
-			if( FMI_LetterJump(i,n) != letterCounts[i] ) break;
-		}
-		if( ( n & sampleIntervalMask ) == 0 ){ // if there is a sample at this position, check counts
-			samplePos = ( n >> sampleIntervalShift );
-			for(i=1;i<6;i++) if( (Index[samplePos].letterJumpsSample[(i-1)]) != (letterCounts[i]) ) break;
-			if(i!=6) break;
-		}
-	}
-	if(n!=textSize){
-		printf(" FAILED (error at BWT position %u)\n",n);
-		exit(-1);
-	}
-	if(verbose){
-		printf(" OK\n");
-		printf("> Checking position samples ");
-		fflush(stdout);
-	}
-	progressCounter=0;
-	textPos=(textSize-1); // start at the terminator char
-	n=0; // start at the first/topmost BWT position
-	while(1){
-		if(verbose){
-			progressCounter++;
-			if(progressCounter==progressStep){ // print progress dots
-				printf(".");
-				fflush(stdout);
-				progressCounter=0;
-			}
-		}
-		if( FMI_PositionInText(n) != textPos ) break;
-		if( ( n & sampleIntervalMask ) == 0 ){ // if there is a sample at this BWT position, check text position
-			samplePos = ( n >> sampleIntervalShift );
-			if( (Index[samplePos].textPositionSample) != textPos ) break;
-		}
-		if(textPos==0) break;
-		textPos--;
-		c=text[textPos];
-		letterId=letterIds[(int)c];
-		i=GetCharIdAtBWTPos(n);
-		if(letterId!=i) break; // check if it is the same letter at the BWT and at the text
-		if(i==0) break; // check if it is the terminator char because it should not be here
-		n = FMI_LetterJump(i,n); // follow the letter backwards to go to next position in the BWT
-	}
-	if( textPos!=0 || FMI_PositionInText(n)!=0 || letterId!=i || i==0 || GetCharIdAtBWTPos(n)!=0 ){
-		printf(" FAILED (error at text position %u)\n",textPos);
-		exit(-1);
-	}
-	if(verbose){
-		printf(" OK\n");
-		fflush(stdout);
-	}
-	#endif
-	*/
-}
-
-// TODO: add code/functions for partial string text, circular text and packed binary text
-unsigned int GetTextCharId(unsigned int pos){
+// TODO: add code/functions for partial string text, circular text, packed binary text and multiple strings
+unsigned int GetTextCharIdFromPlainText(unsigned int pos){
 	//if(pos==textSize) return (unsigned int)letterIds[(unsigned char)'$'];
 	return (unsigned int)letterIds[(unsigned char)text[pos]];
 }
@@ -1149,24 +594,24 @@ typedef struct _LMSPos {
 	int next;
 } LMSPos;
 
-LMSPos *LMSArray;
-int numLMS;
-
+static LMSPos *LMSArray;
+static int numLMS;
 
 char GetCharType(unsigned int pos){
 	char prevType, currentType;
-	if(pos==textSize) return 'S'; // last position
+	if(pos==bwtSize) return 'S'; // last position
 	if(pos==0 || GetTextCharId(pos-1)<GetTextCharId(pos)) prevType='s';
 	else if(GetTextCharId(pos-1)>GetTextCharId(pos)) prevType='l';
 	else prevType='?';
-	while(pos!=(textSize-1) && GetTextCharId(pos)==GetTextCharId(pos+1)) pos++;
-	if(pos==(textSize-1) || GetTextCharId(pos)>GetTextCharId(pos+1)) currentType='l';
+	while(pos!=(bwtSize-1) && GetTextCharId(pos)==GetTextCharId(pos+1)) pos++;
+	if(pos==(bwtSize-1) || GetTextCharId(pos)>GetTextCharId(pos+1)) currentType='l';
 	else currentType='s';
 	if(prevType=='?') prevType=currentType;
 	if(prevType!=currentType) currentType-=32; // S*-type or L*-type
 	return currentType;
 }
 
+// NOTE: fills the global LMSArray variablet and the input charsCounts and charsFirstPos arrays
 void GetLMSs( unsigned int *charsCounts , int *charsFirstPos , char verbose ){
 	int arrayMaxSize, arrayGrowSize;
 	int *charsLastPos;
@@ -1177,7 +622,7 @@ void GetLMSs( unsigned int *charsCounts , int *charsFirstPos , char verbose ){
 		printf("> Collecting LMS positions ");
 		fflush(stdout);
 	}
-	progressStep = (textSize/10);
+	progressStep = (bwtSize/10);
 	progressCounter = 0;
 	charsLastPos = (int *)malloc(ALPHABETSIZE*sizeof(int));
 	for( i = 0 ; i < ALPHABETSIZE ; i++ ){ // initialize chars buckets
@@ -1185,12 +630,11 @@ void GetLMSs( unsigned int *charsCounts , int *charsFirstPos , char verbose ){
 		charsFirstPos[i] = (-1);
 		charsLastPos[i] = (-1);
 	}
-	arrayGrowSize = (textSize/20); // how much to expand the LMS array each time we allocate more memory (5%)
+	arrayGrowSize = (bwtSize/20); // how much to expand the LMS array each time we allocate more memory (5%)
 	if( arrayGrowSize == 0 ) arrayGrowSize = 20;
 	arrayMaxSize = 0;
 	LMSArray = NULL;
-	// TODO: check if n should be textSize or (textSize-1) here
-	n = textSize;
+	n = (bwtSize-1);
 	j = GetTextCharId(n); // last char ('$')
 	charsCounts[j]++;
 	type = 'S'; // type of last char
@@ -1455,7 +899,7 @@ void SortLMSs( int *charsBuckets , char verbose ){
 					depth++;
 				}
 				if( sortedCharId > charId ){
-					printf("\n> ERROR: LMS[%d]@text[%d]='%c' > LMS[%d]@text[%d]='%c'\n",statePos,prevTextPos,ALPHABET[sortedCharId],(statePos+1),textPos,ALPHABET[charId]);
+					printf("\n> ERROR: LMS[%d]@text[%d]='%c' > LMS[%d]@text[%d]='%c'\n",statePos,prevTextPos,LETTERCHARS[sortedCharId],(statePos+1),textPos,LETTERCHARS[charId]);
 					fflush(stdout);
 					charPos = INT_MAX;
 					break;
@@ -1482,7 +926,6 @@ void SortLMSs( int *charsBuckets , char verbose ){
 	#endif
 }
 
-// TODO: check if wrap around goes to position (textSize) or (textSize-1)
 void InducedSort( unsigned int *bucketSize , int *bucketStartPos , char verbose ){
 	int firstId[ALPHABETSIZE], lastId[ALPHABETSIZE], topSId[ALPHABETSIZE], bottomLId[ALPHABETSIZE];
 	int arrayPos, nextArrayPos, charId, leftCharId;
@@ -1500,12 +943,12 @@ void InducedSort( unsigned int *bucketSize , int *bucketStartPos , char verbose 
 		printf("> Induced Sorting suffixes ");
 		fflush(stdout);
 	}
-	progressStep = (textSize/10);
+	progressStep = (bwtSize/10);
 	progressCounter = 0;
 	/*
 	bucketSize = (unsigned int *)malloc(ALPHABETSIZE*sizeof(unsigned int)); // set pointers to the beginning of the buckets
 	for( charId = 0 ; charId < ALPHABETSIZE ; charId++ ) bucketSize[charId] = 0; // reset bucket size
-	for( textPos = 0 ; textPos < textSize ; textPos++ ) bucketSize[ GetTextCharId(textPos) ]++; // count number of each alphabet letter in the text (size of each bucket)
+	for( textPos = 0 ; textPos < (bwtSize-1) ; textPos++ ) bucketSize[ GetTextCharId(textPos) ]++; // count number of each alphabet letter in the text (size of each bucket)
 	*/
 	bucketPointer[0] = 0; // pointers to the location in the suffix array that will be filled up next (for each letter)
 	for( charId = 1 ; charId < ALPHABETSIZE ; charId++ ) bucketPointer[charId] = ( bucketPointer[(charId-1)] + bucketSize[(charId-1)] ); // points to the first position in each bucket
@@ -1534,7 +977,7 @@ void InducedSort( unsigned int *bucketSize , int *bucketStartPos , char verbose 
 		while( arrayPos != (-1) ){ // newly found L-types will be stored at the bottom of the L-type array (at the top of buckets) pointed by lastId
 			textPos = LMSArray[arrayPos].pos;
 			if( textPos != 0 ) textPos--; // left position in the text
-			else textPos = textSize;
+			else textPos = (bwtSize-1); // terminator char
 			leftCharId = GetTextCharId( textPos ); // left char
 			if( processingType == 'L' ){ // set the BWT chars when we are processing L-type suffixes
 				if(verbose){
@@ -1547,8 +990,8 @@ void InducedSort( unsigned int *bucketSize , int *bucketStartPos , char verbose 
 				}
 				#ifdef FILL_INDEX
 				SetCharAtBWTPos( bucketPointer[charId] , leftCharId ); // fill the BWT array
-				if( (bucketPointer[charId] & sampleIntervalMask) == 0 ){ // add (textPos+1) sample to BWT Index here if the BWT position is a multiple of the sampling interval
-					Index[ (bucketPointer[charId] >> sampleIntervalShift) ].textPositionSample = LMSArray[arrayPos].pos;
+				if( (bucketPointer[charId] & SAMPLEINTERVALMASK) == 0 ){ // add (textPos+1) sample to BWT Index here if the BWT position is a multiple of the sampling interval
+					Index[ (bucketPointer[charId] >> SAMPLEINTERVALSHIFT) ].textPositionSample = LMSArray[arrayPos].pos;
 				}
 				#else
 				SetPackedNumber( packedBwt , bucketPointer[charId] , leftCharId ); // fill the BWT array
@@ -1646,7 +1089,7 @@ void InducedSort( unsigned int *bucketSize , int *bucketStartPos , char verbose 
 		while( arrayPos != (-1) ){
 			textPos = LMSArray[arrayPos].pos;
 			if( textPos != 0 ) textPos--;
-			else textPos = textSize; // last position in text (it is the terminal symbol '$', which is an S-type char)
+			else textPos = (bwtSize-1); // last position in text (it is the terminal symbol '$', which is an S-type char)
 			leftCharId = GetTextCharId( textPos );
 			if( processingType == 'S' ){ // set the BWT chars when we are processing S-type suffixes
 				if(verbose){
@@ -1659,8 +1102,8 @@ void InducedSort( unsigned int *bucketSize , int *bucketStartPos , char verbose 
 				}
 				#ifdef FILL_INDEX
 				SetCharAtBWTPos( bucketPointer[charId] , leftCharId );
-				if( (bucketPointer[charId] & sampleIntervalMask) == 0 ){ // add (textPos+1) sample to BWT Index here if the BWT position is a multiple of the sampling interval
-					Index[ (bucketPointer[charId] >> sampleIntervalShift) ].textPositionSample = LMSArray[arrayPos].pos;
+				if( (bucketPointer[charId] & SAMPLEINTERVALMASK) == 0 ){ // add (textPos+1) sample to BWT Index here if the BWT position is a multiple of the sampling interval
+					Index[ (bucketPointer[charId] >> SAMPLEINTERVALSHIFT) ].textPositionSample = LMSArray[arrayPos].pos;
 				}
 				#else
 				SetPackedNumber( packedBwt , bucketPointer[charId] , leftCharId ); // fill the BWT array
@@ -1762,7 +1205,7 @@ void InducedSort( unsigned int *bucketSize , int *bucketStartPos , char verbose 
 	textPos = 0; // set LCP of all 1st positions of all chars to 0, since the LCP of the 1st occurrence of each char in the BWT was never updated
 	for( charId = 0 ; charId < (ALPHABETSIZE-1) ; charId++ ){
 		textPos += bucketSize[charId];
-		if( textPos <= textSize ) LCPArray[textPos] = 0;
+		if( textPos < bwtSize ) LCPArray[textPos] = 0;
 	}
 	#endif
 	if(verbose){
@@ -1771,20 +1214,18 @@ void InducedSort( unsigned int *bucketSize , int *bucketStartPos , char verbose 
 	}
 }
 
-// TODO: set correct textSize
-// TODO: set letterCounts and letterLMSStartPos as global and change names inside functions
-// TODO: add stats for average and longest length of runs in the BWT
-void FMI_NewBuildIndex(char *inputText, unsigned int inputTextSize, unsigned char **lcpArrayPointer, char verbose){
+void FMI_BuildIndex(char *inputText, unsigned int inputTextSize, unsigned char **lcpArrayPointer, char verbose){
 	unsigned int letterId, i, n;
 	unsigned int textPos, samplePos;
 	unsigned int *letterCounts, *letterStartPos;
 	int *letterLMSStartPos;
-	//PackedNumberArray *textArray;
 	IndexBlock *block;
 	unsigned int progressCounter, progressStep;
 	#ifdef DEBUG_INDEX
 	unsigned int bwtPos, prevLetterId, k;
 	unsigned int numRuns, sizeRun, longestRun;
+	struct timeb startTime, endTime;
+	double elapsedTime;
 	#endif
 	/*
 	if(verbose){
@@ -1833,8 +1274,9 @@ void FMI_NewBuildIndex(char *inputText, unsigned int inputTextSize, unsigned cha
 	}
 	*/
 	text = inputText;
-	textSize = inputTextSize;
-	InitializeLetterIdsArray(); // initialize letter ids array
+	bwtSize = (inputTextSize+1); // count terminator char too
+	InitializeIndexArrays(); // initialize letter ids array
+	GetTextCharId = GetTextCharIdFromPlainText; // set function pointer
 	letterCounts = (unsigned int *)malloc(ALPHABETSIZE*sizeof(unsigned int));
 	letterLMSStartPos = (int *)malloc(ALPHABETSIZE*sizeof(int));
 
@@ -1843,40 +1285,33 @@ void FMI_NewBuildIndex(char *inputText, unsigned int inputTextSize, unsigned cha
 	SortLMSs(letterLMSStartPos,verbose);
 	
 	#ifdef FILL_INDEX
-	textSize++; // count terminator char
-	numSamples = ( ( ( textSize - 1 ) >> sampleIntervalShift ) + 1 ); // blocks of 32 chars (if textSize was a multiple of 32 it needed +1 additional unused sample, because last used pos is (textSize-1))
-	if( ((textSize-1) & sampleIntervalMask) != 0 ) numSamples++; // if the last used position does not fall over a sample (0-th position), add an extra sample after the end (to speed up letter counts on 1st char of pattern search)
-	lastBwtPos = ((numSamples-1) << sampleIntervalShift); // so that when getting the sample for this position, if falls in the 0-th pos of the last sample (numSamples-1)
+	numSamples = ( ( ( bwtSize - 1 ) >> SAMPLEINTERVALSHIFT ) + 1 ); // blocks of 32 chars (the last used pos is (bwtSize-1))
 	Index=(IndexBlock *)calloc(numSamples,sizeof(IndexBlock));
 	if(Index==NULL){
 		printf("> ERROR: Not enough memory to create index\n");
 		exit(0);
 	}
-	textSize--;
 	packedBwt = NULL;
 	#else
 	Index = NULL;
-	packedBwt = NewPackedNumberArray((textSize+1),ALPHABETSIZE); // bit array that stores all the chars of the BWT in packed bits form
+	packedBwt = NewPackedNumberArray(bwtSize,ALPHABETSIZE); // bit array that stores all the chars of the BWT in packed bits form
 	#endif
 
 	#ifdef BUILD_LCP
 	#ifdef UNBOUNDED_LCP
-	LCPArray = (int *)malloc((textSize+1)*sizeof(int));
+	LCPArray = (int *)malloc(bwtSize*sizeof(int));
 	(*lcpArrayPointer) = NULL;
 	#else
-	LCPArray = (unsigned char *)malloc((textSize+1)*sizeof(unsigned char));
+	LCPArray = (unsigned char *)malloc(bwtSize*sizeof(unsigned char));
 	(*lcpArrayPointer) = LCPArray; // output LCP array as pointer in argument
 	#endif
 	#endif
 	InducedSort(letterCounts,letterLMSStartPos,verbose);
 	free(LMSArray);
 	free(letterLMSStartPos);
-	textSize++;
 
 	#ifndef FILL_INDEX // allocate index memory now if we did not fill it while building the BWT
-	numSamples = ( ( ( textSize - 1 ) >> sampleIntervalShift ) + 1 ); // blocks of 32 chars (if textSize was a multiple of 32 it needed +1 additional unused sample, because last used pos is (textSize-1))
-	if( ((textSize-1) & sampleIntervalMask) != 0 ) numSamples++; // if the last used position does not fall over a sample (0-th position), add an extra sample after the end (to speed up letter counts on 1st char of pattern search)
-	lastBwtPos = ((numSamples-1) << sampleIntervalShift); // so that when getting the sample for this position, if falls in the 0-th pos of the last sample (numSamples-1)
+	numSamples = ( ( ( bwtSize - 1 ) >> SAMPLEINTERVALSHIFT ) + 1 ); // blocks of 32 chars (if bwtSize was a multiple of 32 it needed +1 additional unused sample, because last used pos is (bwtSize-1))
 	Index=(IndexBlock *)calloc(numSamples,sizeof(IndexBlock));
 	if(Index==NULL){
 		printf("> ERROR: Not enough memory to create index\n");
@@ -1892,12 +1327,12 @@ void FMI_NewBuildIndex(char *inputText, unsigned int inputTextSize, unsigned cha
 	letterStartPos[0]=0; // the terminator char is at the top (0-th) position of the BWT (but on the right)
 	for(i=1;i<ALPHABETSIZE;i++) letterStartPos[i]=(letterStartPos[(i-1)]+letterCounts[(i-1)]); // where previous letter starts plus number of previous letter occurrences
 	for(i=1;i<ALPHABETSIZE;i++) letterCounts[i]=(letterStartPos[i]-1); // initialize all letter jumps with the position before the start of the letter
-	progressStep=(textSize/10);
+	progressStep=(bwtSize/10);
 	progressCounter=0;
 	letterId=0; // just to fix compiler uninitialized warning
 	textPos=0;
 	samplePos = 0; // start in top position of the BWT and go down
-	for( n = 0 ; n < textSize ; n++ ){
+	for( n = 0 ; n < bwtSize ; n++ ){
 		if(verbose){
 			progressCounter++;
 			if(progressCounter==progressStep){ // print progress dots
@@ -1911,13 +1346,12 @@ void FMI_NewBuildIndex(char *inputText, unsigned int inputTextSize, unsigned cha
 		#else
 		letterId = GetPackedNumber(packedBwt,n);
 		#endif
-		letterCounts[letterId]++;
-		if( ( n & sampleIntervalMask ) == 0 ){ // if we are over a sample, store here the current letter counts
+		if( ( n & SAMPLEINTERVALMASK ) == 0 ){ // if we are over a sample, store here the current letter counts
 			block = &(Index[samplePos]);
 			#ifndef FILL_INDEX
-			(block->bwtLowBits) = 0U; // reset block
-			(block->bwtHighBits) = 0U;
-			(block->specialLettersMask) = 0U;
+			(block->bwtBits[0]) = 0U; // reset block
+			(block->bwtBits[1]) = 0U;
+			(block->bwtBits[2]) = 0U;
 			#endif
 			for(i=1;i<ALPHABETSIZE;i++) (block->letterJumpsSample[(i-1)]) = letterCounts[i]; // the i-th letter here is the (i-1)-th letter in the index
 			samplePos++;
@@ -1925,13 +1359,7 @@ void FMI_NewBuildIndex(char *inputText, unsigned int inputTextSize, unsigned cha
 		#ifndef FILL_INDEX
 		SetCharAtBWTPos(n,letterId); // copy the current letter from the packed BWT to the BWT in the index
 		#endif
-	}
-	if( ((textSize-1) & sampleIntervalMask) != 0 ){ // if one last extra sample was added at the end, fill it too
-		block = &(Index[samplePos]);
-		(block->bwtLowBits) = 0U; // reset block
-		(block->bwtHighBits) = 0U;
-		(block->specialLettersMask) = (~0U); // set special letters block to prevent confusing with real letters
-		for(i=1;i<6;i++) (block->letterJumpsSample[(i-1)]) = letterCounts[i];
+		letterCounts[letterId]++;
 	}
 	#ifndef FILL_INDEX
 	FreePackedNumberArray(packedBwt); // the packed BWT array is not needed anymore
@@ -1945,9 +1373,9 @@ void FMI_NewBuildIndex(char *inputText, unsigned int inputTextSize, unsigned cha
 		printf("> Collecting SA samples ");
 		fflush(stdout);
 	}
-	textPos=(textSize-1); // start at the terminator char (first text position is 0)
+	textPos=(bwtSize-1); // start with the position of the terminator char in the text
 	n=0; // start at the first/topmost BWT position
-	progressStep=(textSize/10);
+	progressStep=(bwtSize/10);
 	progressCounter=0;
 	while(1){
 		if(verbose){
@@ -1958,8 +1386,8 @@ void FMI_NewBuildIndex(char *inputText, unsigned int inputTextSize, unsigned cha
 				progressCounter=0;
 			}
 		}
-		if( ( n & sampleIntervalMask ) == 0 ){ // if we are over a sample, store here the current position of the text
-			samplePos = ( n >> sampleIntervalShift );
+		if( ( n & SAMPLEINTERVALMASK ) == 0 ){ // if we are over a sample, store here the current position of the text
+			samplePos = ( n >> SAMPLEINTERVALSHIFT );
 			(Index[samplePos].textPositionSample) = textPos;
 		}
 		if(textPos==0) break;
@@ -1975,12 +1403,12 @@ void FMI_NewBuildIndex(char *inputText, unsigned int inputTextSize, unsigned cha
 	if(verbose){
 		printf(":: FM-Index size = %u MB\n",( (unsigned int)((numSamples)*sizeof(IndexBlock))/1000000));
 		#ifdef BUILD_LCP
-		printf(":: Short LCP Array size = %u MB\n",( (unsigned int)((textSize)*sizeof(unsigned char))/1000000));
+		//printf(":: Short LCP Array size = %u MB\n",( (unsigned int)(bwtSize*sizeof(unsigned char))/1000000));
 		#endif
 		fflush(stdout);	
 	}
 	#ifdef DEBUG_INDEX
-	if(textSize<100) PrintBWT(text,letterStartPos);
+	if(bwtSize<100) PrintBWT(text,letterStartPos);
 	if(verbose){
 		printf("> Checking BWT ");
 		#if ( defined(BUILD_LCP) && defined(UNBOUNDED_LCP) )
@@ -1988,13 +1416,13 @@ void FMI_NewBuildIndex(char *inputText, unsigned int inputTextSize, unsigned cha
 		#endif
 		fflush(stdout);
 	}
-	progressStep=(textSize/10);
+	progressStep=(bwtSize/10);
 	progressCounter=0;
 	numRuns=1;
 	sizeRun=1;
 	longestRun=0;
-	k = FMI_PositionInText(0); // position in the text of the top BWT position (should be equal to (textSize-1))
-	for(bwtPos=1;bwtPos<textSize;bwtPos++){ // compare current position with position above
+	k = FMI_PositionInText(0); // position in the text of the top BWT position (should be equal to (bwtSize-1))
+	for(bwtPos=1;bwtPos<bwtSize;bwtPos++){ // compare current position with position above
 		if(verbose){
 			progressCounter++;
 			if(progressCounter==progressStep){ // print progress dots
@@ -2009,11 +1437,11 @@ void FMI_NewBuildIndex(char *inputText, unsigned int inputTextSize, unsigned cha
 		#if ( defined(BUILD_LCP) && defined(UNBOUNDED_LCP) )
 		if( (int)LCPArray[bwtPos] != (int)n ){
 			printf("\n> ERROR: LCP[%u]=%d =!= %d\n",bwtPos,(int)LCPArray[bwtPos],(int)n);
-			printf("\t[%c] %c|",GetCharType(k),letterChars[GetCharIdAtBWTPos((bwtPos-1))]);
-			for( textPos=k ; textPos<=(k+n) ; textPos++ ) putchar(letterChars[GetTextCharId(textPos)]);
+			printf("\t[%c] %c|",GetCharType(k),LETTERCHARS[GetCharIdAtBWTPos((bwtPos-1))]);
+			for( textPos=k ; textPos<=(k+n) ; textPos++ ) putchar(LETTERCHARS[GetTextCharId(textPos)]);
 			putchar('\n');
-			printf("\t[%c] %c|",GetCharType(i),letterChars[GetCharIdAtBWTPos(bwtPos)]);
-			for( textPos=i ; textPos<=(i+n) ; textPos++ ) putchar(letterChars[GetTextCharId(textPos)]);
+			printf("\t[%c] %c|",GetCharType(i),LETTERCHARS[GetCharIdAtBWTPos(bwtPos)]);
+			for( textPos=i ; textPos<=(i+n) ; textPos++ ) putchar(LETTERCHARS[GetTextCharId(textPos)]);
 			putchar('\n');
 			fflush(stdout);
 			getchar();
@@ -2030,14 +1458,15 @@ void FMI_NewBuildIndex(char *inputText, unsigned int inputTextSize, unsigned cha
 		}
 		k = i; // current pos will be prev pos in next step
 	}
-	if(bwtPos!=textSize){
+	if(bwtPos!=bwtSize){
 		printf(" FAILED (error at BWT position %u)\n",bwtPos);
 		getchar();
 		exit(-1);
 	}
 	if(verbose){
 		printf(" OK\n");
-		printf(":: Average run length = %.2lf (max = %u)\n",((double)textSize/(double)numRuns),longestRun);
+		printf(":: Number of char runs = %u (%.2lf%%)\n",numRuns,((double)(numRuns*100)/(double)bwtSize));
+		printf(":: Average run length = %.2lf (max = %u)\n",((double)bwtSize/(double)numRuns),longestRun);
 		printf("> Checking LF samples ");
 		fflush(stdout);
 	}
@@ -2045,8 +1474,9 @@ void FMI_NewBuildIndex(char *inputText, unsigned int inputTextSize, unsigned cha
 		if(letterStartPos[i]!=0) letterCounts[i]=(letterStartPos[i]-1);
 		else letterCounts[i]=0;
 	}
+	ftime(&startTime);
 	progressCounter=0;
-	for(n=0;n<textSize;n++){
+	for(n=0;n<bwtSize;n++){
 		if(verbose){
 			progressCounter++;
 			if(progressCounter==progressStep){ // print progress dots
@@ -2055,31 +1485,33 @@ void FMI_NewBuildIndex(char *inputText, unsigned int inputTextSize, unsigned cha
 				progressCounter=0;
 			}
 		}
-		i=GetCharIdAtBWTPos(n); // get letter and update count
-		if(i!=0){ // check if it is the terminator char because we cannot jump by it
-			letterCounts[i]++;
-			if( FMI_LetterJump(i,n) != letterCounts[i] ) break;
-		}
-		if( ( n & sampleIntervalMask ) == 0 ){ // if there is a sample at this position, check counts
-			samplePos = ( n >> sampleIntervalShift );
+		if( ( n & SAMPLEINTERVALMASK ) == 0 ){ // if there is a sample at this position, check counts
+			samplePos = ( n >> SAMPLEINTERVALSHIFT );
 			for(i=1;i<ALPHABETSIZE;i++) if( (Index[samplePos].letterJumpsSample[(i-1)]) != (letterCounts[i]) ) break;
 			if(i!=ALPHABETSIZE) break;
 		}
+		i=GetCharIdAtBWTPos(n); // get letter and update count
+		letterCounts[i]++;
+		//if(i!=0) if( FMI_LetterJump(i,n) != letterCounts[i] ) break; // check if it is the terminator char because we cannot jump by it
+		for(i=1;i<ALPHABETSIZE;i++) if( FMI_LetterJump(i,n) != letterCounts[i] ) break;
 	}
-	if(n!=textSize){
+	if(n!=bwtSize){
 		printf(" FAILED (error at BWT position %u)\n",n);
 		getchar();
 		exit(-1);
 	}
+	ftime(&endTime);
+	elapsedTime = ( ((endTime.time) + (endTime.millitm)/1000.0) - ((startTime.time) + (startTime.millitm)/1000.0) );
 	if(verbose){
 		printf(" OK\n");
+		printf(":: Done in %.3lf seconds\n",elapsedTime);
 		printf("> Checking SA samples ");
 		fflush(stdout);
 	}
 	numRuns=0;
 	longestRun=0;
 	progressCounter=0;
-	textPos=(textSize-1); // start at the terminator char
+	textPos=(bwtSize-1); // start at the terminator char
 	n=0; // start at the first/topmost BWT position
 	while(1){
 		if(verbose){
@@ -2094,8 +1526,8 @@ void FMI_NewBuildIndex(char *inputText, unsigned int inputTextSize, unsigned cha
 		if( FMI_PositionInText(n) != textPos ) break;
 		if( numBackSteps > longestRun ) longestRun = numBackSteps;
 		numRuns += numBackSteps;
-		if( ( n & sampleIntervalMask ) == 0 ){ // if there is a sample at this BWT position, check text position
-			samplePos = ( n >> sampleIntervalShift );
+		if( ( n & SAMPLEINTERVALMASK ) == 0 ){ // if there is a sample at this BWT position, check text position
+			samplePos = ( n >> SAMPLEINTERVALSHIFT );
 			if( (Index[samplePos].textPositionSample) != textPos ) break;
 		}
 		if(textPos==0) break;
@@ -2113,7 +1545,7 @@ void FMI_NewBuildIndex(char *inputText, unsigned int inputTextSize, unsigned cha
 	}
 	if(verbose){
 		printf(" OK\n");
-		printf(":: Average backtracking steps = %.2lf (max = %u)\n",((double)numRuns/(double)textSize),longestRun);
+		printf(":: Average backtracking steps = %.2lf (max = %u)\n",((double)numRuns/(double)bwtSize),longestRun);
 		fflush(stdout);
 	}
 	#endif

@@ -5,9 +5,7 @@
 #include "bwtindex.h"
 #include "lcparray.h"
 
-#ifdef _MSC_VER
-#pragma warning(disable : 4996)
-#endif
+#define VERSION "0.6"
 
 //#define BENCHMARK 1
 #if defined(unix) && defined(BENCHMARK)
@@ -39,7 +37,7 @@ void GetMEMs(int numRefs, int numSeqs, int minMemSize, int bothStrands, char *ou
 		text=(allSequences[i]->chars);
 		textsize=(allSequences[i]->size);
 		lcpArray=NULL;
-		FMI_NewBuildIndex(text,textsize,&lcpArray,1);
+		FMI_BuildIndex(text,textsize,&lcpArray,1);
 		j=BuildSampledLCPArray(text,textsize,lcpArray,1);
 		FreeSampledSuffixArray();
 		FMI_FreeIndex();
@@ -64,7 +62,7 @@ void GetMEMs(int numRefs, int numSeqs, int minMemSize, int bothStrands, char *ou
 		text=(allSequences[r]->chars);
 		textsize=(allSequences[r]->size);
 		lcpArray=NULL;
-		FMI_NewBuildIndex(text,textsize,&lcpArray,1);
+		FMI_BuildIndex(text,textsize,&lcpArray,1);
 		i=BuildSampledLCPArray(text,textsize,lcpArray,1);
 		if(lcpArray!=NULL) free(lcpArray);
 		#ifndef DEBUGMEMS
@@ -182,7 +180,7 @@ void GetMEMs(int numRefs, int numSeqs, int minMemSize, int bothStrands, char *ou
 					prevTopPtr=topPtr; // save pointer values in case there's no match on the next char, and they loose their values
 					prevBottomPtr=bottomPtr;
 				} // end of loop for all chars of seq
-				memSize=(int)(numMems==0)?(0):(sumMemsSize/(long long)numMems);
+				memSize=(int)((numMems==0)?(0):(sumMemsSize/(long long)numMems));
 				totalNumMems+=numMems;
 				totalAvgMemsSize+=memSize;
 				printf(" (%d MEMs ; avg size = %d bp)\n",numMems,memSize);
@@ -203,7 +201,7 @@ void GetMEMs(int numRefs, int numSeqs, int minMemSize, int bothStrands, char *ou
 	fflush(stdout);
 }
 
-typedef struct {
+typedef struct _MEMInfo {
 	int refPos;
 	int queryPos;
 	int size;
@@ -291,7 +289,7 @@ void SortMEMsFile(char *memsFilename){
 int main(int argc, char *argv[]){
 	int i, n, mode, numFiles, numSeqsInFirstFile, outFileArgNum, argBothStrands, argNoNs, argMinMemSize;
 	char *outFilename;
-	printf("[ slaMEM v0.5 ]\n");
+	printf("[ slaMEM v%s ]\n",VERSION);
 	if(argc<3){
 		printf("\nUsage:\n");
 		printf("\t%s <options> <reference_file> <query_files>",argv[0]);
