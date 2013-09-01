@@ -199,3 +199,31 @@ void PrintProgressBar(double percentage, int lineabove){
 	prevbarpos=barpos; // save last bar position
 	//if(lineabove) printf("\x1B[99D\x1B[K"); // move cursor to beginning of line and delete until the end of the line
 }
+
+// NOTE: returns (-1) if it is not a valid number
+int ParseNumber(char *numberstring){
+	int i, number, decimals;
+	char c;
+	number=0;
+	decimals=0;
+	i=0;
+	while((c=numberstring[i])!='\0'){
+		if(c>='0' && c<='9'){
+			number=(number*10+((int)c-48));
+			decimals=(decimals*10);
+		} else if(c=='K'){
+			number=(number*1000);
+			break;
+		} else if(c=='M'){
+			number=(number*1000000);
+			break;
+		} else if(c=='G'){
+			number=(number*1000000000);
+			break;
+		} else if(c==',' || c=='.') decimals=1;
+		else return (-1);
+		i++;
+	}
+	if(decimals!=0) number=(number/decimals);
+	return number;
+}

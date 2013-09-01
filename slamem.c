@@ -4,8 +4,9 @@
 #include "sequence.h"
 #include "bwtindex.h"
 #include "lcparray.h"
+#include "graphics.h"
 
-#define VERSION "0.6"
+#define VERSION "0.7"
 
 //#define BENCHMARK 1
 #if defined(unix) && defined(BENCHMARK)
@@ -13,7 +14,9 @@
 #include "string.h"
 #endif
 
+#ifdef _MSC_VER
 #define PAUSE_AT_EXIT 1
+#endif
 
 void GetMEMs(int numRefs, int numSeqs, int minMemSize, int bothStrands, char *outFilename){
 	FILE *memsOutputFile;
@@ -280,45 +283,220 @@ void SortMEMsFile(char *memsFilename){
 	free(sortedMemsFilename);
 	free(memsArray);
 	printf("> Done!\n");
+	#ifdef PAUSE_AT_EXIT
 	getchar();
+	#endif
 	exit(0);
 }
 
-// TODO: create ref alignment plot from mems file with both strands
+void CreateMemMapImage(char *refFilename, char *queryFilename, char *memsFilename){
+	FILE *memsFile;
+	char c, seqname[256], **seqsNames, *imageFilename;
+	int i, numSeqs, *seqsSizes, numMems, refPos, queryPos, memSize, strand, k;
+	numSequences=0;
+	numSeqs=LoadSequencesFromFile(refFilename,0,0);
+	if(numSeqs==0){
+		printf("\n> ERROR: Reference sequence not found\n");
+		exit(-1);
+	}
+	if(numSeqs>1){
+		printf("\n> ERROR: Multiple reference sequences are not supported\n");
+		exit(-1);
+	}
+	numSeqs=LoadSequencesFromFile(queryFilename,0,0);
+	if(numSeqs==0){
+		printf("\n> ERROR: No query sequences found\n");
+		exit(-1);
+	}
+	printf("> Processing MEMs from <%s> ...\n",memsFilename);
+	fflush(stdout);
+	if((memsFile=fopen(memsFilename,"r"))==NULL){
+		printf("\n> ERROR: Cannot read file\n");
+		exit(-1);
+	}
+	seqsSizes=(int *)malloc(numSequences*sizeof(int));
+	seqsNames=(char **)malloc(numSequences*sizeof(char *));
+	for(i=0;i<numSequences;i++){
+		seqsSizes[i]=(allSequences[i]->size);
+		seqsNames[i]=(allSequences[i]->name);
+	}
+	InitializeRefAlignmentImage(seqsSizes,numSequences);
+	seqname[0]='\0';
+	refPos=-1;
+	queryPos=-1;
+	memSize=-1;
+	strand=0;
+	numSeqs=0;
+	numMems=0;
+	while(1){
+		c=fgetc(memsFile);
+		if(c=='>' || c==EOF){
+			if(numSeqs!=0){
+				printf("(%d MEMs)\n",numMems);
+				fflush(stdout);
+			}
+			if(c==EOF) break;
+			numMems=0;
+			fscanf(memsFile," %255[^\n]\n",seqname);
+			printf(":: '%s' ... ",seqname);
+			fflush(stdout);
+			i=0; // check if seq name ends with string "Reverse"
+			while(seqname[i]!='\0') i++;
+			if(i>7) i-=7;
+			for(k=0;k<8;k++,i++) if(("Reverse"[k])!=seqname[i]) break;
+			if(k==8) strand=1; // reverse strand of the previous sequence
+			else {
+				strand=0;
+				numSeqs++;
+				if(numSeqs==numSequences){
+					printf("\n> ERROR: MEMs file not generated from this query file\n");
+					exit(-1);
+				}
+			}
+			continue;
+		} else ungetc(c,memsFile);
+		if((fscanf(memsFile," %d %d %d ",&refPos,&queryPos,&memSize))!=3){
+			printf("\n> ERROR: Invalid MEM format\n");
+			exit(-1);
+		}
+		if( refPos==0 || queryPos==0 || memSize==0 ){
+			printf("\n> ERROR: Invalid MEM values\n");
+			exit(-1);
+		}
+		refPos--; // convert from 1-based position to 0-based position
+		queryPos--;
+		if(strand==0) DrawRefAlignmentBlock(queryPos,refPos,memSize,numSeqs);
+		else { // the position is relative to the rev strand, so convert it to fwd strand
+			queryPos=((seqsSizes[numSeqs])-(queryPos+memSize)); // pos is on right, add size to go to left, subtract from seq length
+			DrawRefAlignmentBlock(queryPos,refPos,(-memSize),numSeqs);
+		}
+		numMems++;
+	}
+	fclose(memsFile);
+	imageFilename=AppendToBasename(memsFilename,".bmp");
+	FinalizeRefAlignmentImage(seqsNames,imageFilename);
+	free(imageFilename);
+	free(seqsSizes);
+	free(seqsNames);
+	printf("> Done!\n");
+	#ifdef PAUSE_AT_EXIT
+	getchar();
+	#endif
+	exit(0);
+}
+
+// Cleans all invalid characters from a FASTA file (leaving only ACGT) and joins multiple sequences if present
+void CleanFasta(char *fastafilename){
+	FILE *fastafile, *cleanfile;
+	char *cleanfilename;
+	int charcount,invalidcharcount,sequencecount,linesize;
+	char c;
+	printf("> Opening FASTA file <%s> ... ",fastafilename);
+	fflush(stdout);
+	if((fastafile=fopen(fastafilename,"r"))==NULL){
+		printf("\n> ERROR: FASTA file not found\n");
+		exit(-1);
+	}
+	c=fgetc(fastafile);
+	if(c!='>'){
+		printf("\n> ERROR: Invalid FASTA file\n");
+		exit(-1);
+	}
+	printf("OK\n");
+	cleanfilename=AppendToBasename(fastafilename,"-clean.fasta");
+	printf("> Creating clean FASTA file <%s> ... ",cleanfilename);
+	fflush(stdout);
+	if((cleanfile=fopen(cleanfilename,"w"))==NULL){
+		printf("\n> ERROR: Can't write clean FASTA file\n");
+		exit(-1);
+	}
+	fprintf(cleanfile,">%s\n",fastafilename); // filename as label
+	linesize=0;
+	charcount=0;
+	invalidcharcount=0;
+	sequencecount=0;
+	while(c!=EOF){
+		if(c=='A' || c=='C' || c=='G' || c=='T'){
+			fputc((int)c,cleanfile);
+			charcount++;
+			linesize++;
+			if(linesize==100){ // split sequence by lines of size 100
+				fputc('\n',cleanfile);
+				linesize=0;
+			}
+		} else if(c=='a' || c=='c' || c=='g' || c=='t'){
+			fputc((int)(c-32),cleanfile);
+			charcount++;
+			linesize++;
+			if(linesize==100){ // split sequence by lines of size 100
+				fputc('\n',cleanfile);
+				linesize=0;
+			}
+		} else if(c=='>'){ // new sequence
+			while(c!='\n' && c!=EOF) c=fgetc(fastafile); // skip description of sequence
+			sequencecount++;
+		} else if(c>32 && c<127) invalidcharcount++; // invalid alphanumeric character
+		c=fgetc(fastafile);
+	}
+	if(linesize!=0) fputc('\n',cleanfile); // ending newline
+	fclose(fastafile);
+	fclose(cleanfile);
+	free(cleanfilename);
+	printf(" OK\n");
+	printf(":: %d total chars",charcount);
+	if(invalidcharcount!=0) printf(" (%d non ACGT chars removed) ",invalidcharcount);
+	if(sequencecount>1) printf(" ; %d sequences merged",sequencecount);
+	printf("\n");
+	printf("> Done!\n");
+	#ifdef PAUSE_AT_EXIT
+	getchar();
+	#endif
+	exit(0);
+}
+
 // TODO: output Multi-MEMS
 int main(int argc, char *argv[]){
 	int i, n, mode, numFiles, numSeqsInFirstFile, outFileArgNum, argBothStrands, argNoNs, argMinMemSize;
 	char *outFilename;
-	printf("[ slaMEM v%s ]\n",VERSION);
+	printf("[ slaMEM v%s ]\n\n",VERSION);
 	if(argc<3){
-		printf("\nUsage:\n");
-		printf("\t%s <options> <reference_file> <query_files>",argv[0]);
-		printf("\nOptions:\n");
+		printf("Usage:\n");
+		printf("\t%s <options> <reference_file> <query_files>\n",argv[0]);
+		printf("Options:\n");
 		printf("\t-m\tfind MEMs (default)\n");
 		printf("\t-l\tminimum match length (default=50)\n");
 		printf("\t-o\toutput file name (default=\"*-mems.txt\")\n");
 		printf("\t-b\tprocess both strands\n");
 		printf("\t-n\tdiscard N's\n");
-		printf("\nExtra:\n");
+		printf("Extra:\n");
 		//printf("\t-s\tsort MEMs file\n");
 		printf("\t-v\tgenerate MEMs map image\n");
+		printf("\t-c\tclean FASTA file\n");
 		printf("\n");
 		return (-1);
 	}
 	if( ParseArgument(argc,argv,"S",0) ){ // Sort MEMs
 		if(argc!=3){
-			printf("Usage: %s -s <mems_file>\n",argv[0]);
+			printf("Usage: %s -s <mems_file>\n\n",argv[0]);
 			return (-1);
 		}
 		SortMEMsFile(argv[2]);
 		return 0;
 	}
 	if( ParseArgument(argc,argv,"V",0) ){ // Create MEMs image
-		if(argc!=4){
-			printf("Usage: %s -v <reference_file> <mems_file>\n",argv[0]);
+		if(argc!=5){
+			printf("Usage: %s -v <reference_file> <query_file> <mems_file>\n\n",argv[0]);
 			return (-1);
 		}
-		//CreateMemMapImage(argv[2],argv[3]);
+		CreateMemMapImage(argv[2],argv[3],argv[4]);
+		return 0;
+	}
+	if( ParseArgument(argc,argv,"C",0) ){ // Clean FASTA file
+		if(argc!=3){
+			printf("Usage: %s -c <fasta_file>\n\n",argv[0]);
+			return (-1);
+		}
+		CleanFasta(argv[2]);
 		return 0;
 	}
 	mode=0;
@@ -363,6 +541,8 @@ int main(int argc, char *argv[]){
 	free(outFilename);
 	DeleteAllSequences();
 	printf("> Done!\n");
-	if(PAUSE_AT_EXIT) getchar();
+	#ifdef PAUSE_AT_EXIT
+	getchar();
+	#endif
 	return 0;
 }

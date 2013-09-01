@@ -111,9 +111,8 @@ const unsigned int alphabet[] = { // least significant bit is the upper left pix
 uint8_t color_white, color_black, color_grey, color_red, color_green, color_blue;
 
 double pos_per_pixel;
-int img_width, img_height;
-int h_margin, v_margin, num_seqs, seqs_space, seqs_height, *seqs_width, *seqs_start_y, **seqs_pixels_block_size;
 uint8_t **ref_pixels_colors;
+int h_margin, num_seqs, seqs_height, *seqs_width, *seqs_start_y, **seqs_pixels_block_size;
 
 void InitColors(){
 	color_white=getColorFromPalette(255,255,255);
@@ -230,27 +229,31 @@ void DrawArrowTip(int x, int y, int xstep, int ysize, int dir, uint8_t backcolor
 	}
 }
 
-// TODO: make global variables not needed elsewhere local
 void InitializeRefAlignmentImage(int *seqsizes, int numseqs){
+	int img_width, img_height;
+	int v_margin, header_height, seqs_space, max_seq_size;
+	int max_seq_width, num_digits, mark_pos, mark_number;
 	int i, n;
 	double step;
 	v_margin=(2*CHAR_HEIGHT);
 	h_margin=(2*CHAR_WIDTH);
 	seqs_space=(2*CHAR_HEIGHT);
 	seqs_height=(5*CHAR_HEIGHT);
+	header_height=(2*CHAR_HEIGHT+2*CHAR_SPACE);
 	img_width=1024;
-	img_height=( 2*v_margin + numseqs*seqs_height + (numseqs-1)*seqs_space ); // top/bottom margins, all seqs, space between seqs
+	img_height=( 2*v_margin + header_height + numseqs*seqs_height + (numseqs-1)*seqs_space ); // top/bottom margins, position marks, all seqs, space between seqs
 	initializeBitmap(img_width,img_height,0);
 	num_seqs=numseqs;
-	n=seqsizes[0];
-	for(i=1;i<num_seqs;i++) if(seqsizes[i]>n) n=seqsizes[i]; // get size of longest seq
-	pos_per_pixel=( (double)(n) / (double)(img_width-2*h_margin) );
+	max_seq_size=seqsizes[0];
+	for(i=1;i<num_seqs;i++) if(seqsizes[i]>max_seq_size) max_seq_size=seqsizes[i]; // get size of longest seq
+	num_digits=DigitsCount(max_seq_size);
+	pos_per_pixel=( (double)(max_seq_size) / (double)(img_width-2*h_margin-(num_digits*(CHAR_WIDTH+CHAR_SPACE)/2)) );
 	seqs_width=(int *)malloc(num_seqs*sizeof(int));
 	seqs_start_y=(int *)malloc(num_seqs*sizeof(int));
 	seqs_pixels_block_size=(int **)malloc(num_seqs*sizeof(int *));
 	for(i=0;i<num_seqs;i++){
 		seqs_width[i]=(int)ceil(((double)seqsizes[i])/pos_per_pixel);
-		seqs_start_y[i]=( v_margin + i*(seqs_height+seqs_space) );
+		seqs_start_y[i]=( v_margin + header_height + i*(seqs_height+seqs_space) );
 		if(i!=0) seqs_pixels_block_size[i]=(int *)calloc(seqs_width[i],sizeof(int));
 	}
 	InitColors();
@@ -284,8 +287,35 @@ void InitializeRefAlignmentImage(int *seqsizes, int numseqs){
 	}
 	DrawArrowTip((h_margin+seqs_width[0]-1),(seqs_start_y[0]),3,((seqs_height/2)-1),(+1),color_white);
 	DrawArrowTip((h_margin),(seqs_start_y[0]+(seqs_height/2)+1),3,((seqs_height/2)-1),(-1),color_white);
+	DrawNumber(1,(h_margin),(v_margin),color_black); // print left pos number
+	DrawVerticalLine((h_margin),(v_margin+CHAR_HEIGHT+CHAR_SPACE),CHAR_HEIGHT,color_black);
+	max_seq_width=(int)ceil(((double)max_seq_size)/pos_per_pixel);
+	DrawNumber(max_seq_size,(h_margin+max_seq_width-1),(v_margin),color_black); // print right pos number
+	DrawVerticalLine((h_margin+max_seq_width-1),(v_margin+CHAR_HEIGHT+CHAR_SPACE),CHAR_HEIGHT,color_black);
+	i=(num_digits*CHAR_WIDTH+(num_digits-1)*CHAR_SPACE); // space occupied by each number
+	n=(max_seq_width-i); // space available to print numbers without the numbers already at both ends
+	i+=CHAR_WIDTH; // each number needs a space after it
+	i=(n/i); // how many numbers can be printed in that space
+	n=(max_seq_size/(i+1)); // shortest interval between consecutive marks so that numbers do not overlap
+	i=1; // interval between marks
+	while(i<n){ // find next larger interval size that is a multiple of 2, 5 or 10
+		i=2*i; // x2
+		if(i>=n) break;
+		i=(i/2)*5; // x5
+		if(i>=n) break;
+		i=2*i; // x10
+	}
+	n=(h_margin+max_seq_width-(num_digits*(CHAR_WIDTH+CHAR_SPACE))); // last valid position before overlapping with left number
+	mark_number=i;
+	while((mark_pos=(int)floor(((double)mark_number)/pos_per_pixel))<n){ // print marks
+		DrawNumber(mark_number,(h_margin+mark_pos),(v_margin),color_black);
+		DrawVerticalLine((h_margin+mark_pos),(v_margin+CHAR_HEIGHT+CHAR_SPACE),CHAR_HEIGHT,color_black);
+		mark_number+=i;
+	}
+	DrawHorizontalLine((h_margin),(v_margin+CHAR_HEIGHT+CHAR_SPACE+(CHAR_HEIGHT/2)),(max_seq_width),color_black);
 }
 
+// NOTE: negative size means the block is in the reverse strand, but the position always refer to the forward strand
 void DrawRefAlignmentBlock(int seqpos, int refpos, int size, int seqid){
 	int endpos, strand;
 	if(size<0){

@@ -7,6 +7,10 @@
 //#define DEBUGLCP 1
 //#define BUILDLCP 1 // if we want to build the LCP array here or use the lcparray passed as argument
 
+#ifdef DEBUGLCP
+#include <sys/timeb.h>
+#endif
+
 /**/
 #define BLOCKSIZE 64
 #define BLOCKMASK 63
@@ -98,27 +102,29 @@ int GetLcpPosFromBwtPos(unsigned int pos){
 		bitsArray &= ( bitsArray - 1ULL );
 	}
 	*/
-	/**/
-	pos += perByteCounts[ ( bitsArray & 0x00000000000000FF ) >> 0 ];
-	pos += perByteCounts[ ( bitsArray & 0x000000000000FF00 ) >> 8 ];
-	pos += perByteCounts[ ( bitsArray & 0x0000000000FF0000 ) >> 16 ];
-	pos += perByteCounts[ ( bitsArray & 0x00000000FF000000 ) >> 24 ];
-	pos += perByteCounts[ ( bitsArray & 0x000000FF00000000 ) >> 32 ];
-	pos += perByteCounts[ ( bitsArray & 0x0000FF0000000000 ) >> 40 ];
-	pos += perByteCounts[ ( bitsArray & 0x00FF000000000000 ) >> 48 ];
-	pos += perByteCounts[ ( bitsArray & 0xFF00000000000000 ) >> 56 ];
-	return pos;
-	/**/
-	#ifdef __GNUC__
-	return ( pos + __builtin_popcountll( bitsArray ) );
-	#else
-	bitsArray = ( bitsArray & 0x5555555555555555 ) + ( ( bitsArray >> 1 ) & 0x5555555555555555 ); // 0x5 = 0101b ; 2 bits ( final max count = 2 -> 2 bits )
+	/*
+	//bitsArray = ( bitsArray & 0x5555555555555555 ) + ( ( bitsArray >> 1 ) & 0x5555555555555555 ); // 0x5 = 0101b ; 2 bits ( final max count = 2 -> 2 bits )
+	bitsArray = ( bitsArray - ( ( bitsArray >> 1 ) & 0x5555555555555555 ) );
 	bitsArray = ( bitsArray & 0x3333333333333333 ) + ( ( bitsArray >> 2 ) & 0x3333333333333333 ); // 0x3 = 0011b ; 4 bits ( final max count = 4 -> 3 bits )
 	bitsArray = ( ( bitsArray + ( bitsArray >> 4 ) ) & 0x0F0F0F0F0F0F0F0F ); // 0x0F = 00001111b ; 8 bits ( final max count = 8 -> 4 bits )
-	bitsArray = ( bitsArray + ( bitsArray >> 8 ) ); // the final count will be at most 64, which is 7 bits, and since we now have blocks of 8 bits, we can add them without masking because there will not be any overflow
-	bitsArray = ( bitsArray + ( bitsArray >> 16 ) );
-	bitsArray = ( ( bitsArray + ( bitsArray >> 32 ) ) & 0x000000000000007F ); // get the last 7 bits ( final max count = 64 -> 7 bits )
+	//bitsArray = ( bitsArray + ( bitsArray >> 8 ) ); // the final count will be at most 64, which is 7 bits, and since we now have blocks of 8 bits, we can add them without masking because there will not be any overflow
+	//bitsArray = ( bitsArray + ( bitsArray >> 16 ) );
+	//bitsArray = ( ( bitsArray + ( bitsArray >> 32 ) ) & 0x000000000000007F ); // get the last 7 bits ( final max count = 64 -> 7 bits )
+	bitsArray = ( ( bitsArray * 0x0101010101010101 ) >> 56 );
 	return ( pos + (int)bitsArray );
+	*/
+	#ifdef __GNUC__
+		return ( pos + __builtin_popcountll( bitsArray ) );
+	#else
+		pos += perByteCounts[ ( bitsArray & 0x00000000000000FF ) >> 0 ];
+		pos += perByteCounts[ ( bitsArray & 0x000000000000FF00 ) >> 8 ];
+		pos += perByteCounts[ ( bitsArray & 0x0000000000FF0000 ) >> 16 ];
+		pos += perByteCounts[ ( bitsArray & 0x00000000FF000000 ) >> 24 ];
+		pos += perByteCounts[ ( bitsArray & 0x000000FF00000000 ) >> 32 ];
+		pos += perByteCounts[ ( bitsArray & 0x0000FF0000000000 ) >> 40 ];
+		pos += perByteCounts[ ( bitsArray & 0x00FF000000000000 ) >> 48 ];
+		pos += perByteCounts[ ( bitsArray & 0xFF00000000000000 ) >> 56 ];
+		return pos;
 	#endif
 }
 
@@ -533,6 +539,8 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 	#ifdef DEBUGLCP
 	unsigned int topptr, bottomptr;
 	unsigned int stopptr, sbottomptr;
+	struct timeb startTime, endTime;
+	double elapsedTime;
 	#endif
 	offsetMasks64bits = (unsigned long long int *)malloc(64*sizeof(unsigned long long int));
 	mask = 1ULL;
@@ -688,6 +696,7 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 	}
 	#ifdef DEBUGLCP
 	if(verbose){ printf("> Testing Sampled LCP Array "); fflush(stdout); }
+	ftime(&startTime);
 	k=(-1);
 	for(bwtpos=0;bwtpos<(unsigned int)bwtLength;bwtpos++){
 		if(verbose){
@@ -703,7 +712,14 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 			if(GetBwtPosFromLcpPos(k)!=(int)bwtpos) break;
 		}
 	}
-	if((bwtpos==(unsigned int)bwtLength) && (k==(numLCPSamples-1))){ if(verbose) printf(" OK\n"); }
+	if((bwtpos==(unsigned int)bwtLength) && (k==(numLCPSamples-1))){
+		ftime(&endTime);
+		elapsedTime = ( ((endTime.time) + (endTime.millitm)/1000.0) - ((startTime.time) + (startTime.millitm)/1000.0) );
+		if(verbose){
+			printf(" OK\n");
+			printf(":: Done in %.3lf seconds\n",elapsedTime);
+		}
+	}
 	else printf("\n> ERROR: sampledLCP[%u]=%d =!= fullLCP[%u]=%d (bwtPos=%u->lcpPos=%d->bwtPos=%d) \n",bwtpos,GetLCP(bwtpos),bwtpos,fullLCPArray[bwtpos],bwtpos,k,GetBwtPosFromLcpPos(k));
 	#endif
 	if(verbose){ printf("> Collecting Previous/Next Smaller Values "); fflush(stdout); }
