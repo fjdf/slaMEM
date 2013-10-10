@@ -1,3 +1,17 @@
+/* ================================================================= *
+ *  bwtindex.c : FM-Index                                            *
+ *                                                                   *
+ *  slaMEM: MUMmer-like tool to retrieve Maximum Exact Matches using *
+ *          an FM-Index and a Sampled Longest Common Prefix Array    *
+ *                                                                   *
+ *  Copyright (c) 2013, Francisco Fernandes <fjdf@kdbio.inesc-id.pt> *
+ *  Knowledge Discovery in Bioinformatics group (KDBIO/INESC-ID)     *
+ *  All rights reserved                                              *
+ *                                                                   *
+ *  This file is subject to the terms and conditions defined in the  *
+ *  file 'LICENSE', which is part of this source code package.       *
+ * ================================================================= */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
@@ -15,6 +29,7 @@
 
 //#define FILEHEADER "IDX0"
 
+// TODO: implement BWT with an wavelet tree
 typedef struct _IndexBlock { // 9*32 bits / 32 char per block = 9 bits per char
 	unsigned int bwtBits[3]; // 3 bits (x32) for the letters in this order: $NACGT (000 to 101)
 	unsigned int letterJumpsSample[5]; // cumulative counts for NACGT (not $) up to but *not* including this block
@@ -252,6 +267,7 @@ __inline void SetCharAtBWTPos( unsigned int bwtpos , unsigned int charid ){
 	(block->bwtBits[2]) |= ( (~letterMasks[2]) & mask );
 }
 
+// TODO: check if creating masks on-the-fly is faster than fetching them from array
 __inline unsigned int GetCharIdAtBWTPos( unsigned int bwtpos ){
 	unsigned int sample, offset, mask, charid;
 	IndexBlock *block;
@@ -586,6 +602,12 @@ unsigned int GetTextCharIdFromPlainText(unsigned int pos){
 	return (unsigned int)letterIds[(unsigned char)text[pos]];
 }
 
+// TODO: implement as lookup table with entries corresponding to blocks of size floor(log2(smallest_sequence)) with seq_id + block_start_in_seq + seq_end_in_block for (seq_id+1) check
+// TODO: check implementation with binary search tree of shared and distinct bits of all numbers belonging to the same/different sequences
+unsigned int GetTextCharIdFromMultipleStrings(unsigned int pos){
+	return pos;
+}
+
 typedef struct _LMSPos {
 	unsigned int pos;
 	#ifdef BUILD_LCP
@@ -611,7 +633,7 @@ char GetCharType(unsigned int pos){
 	return currentType;
 }
 
-// NOTE: fills the global LMSArray variablet and the input charsCounts and charsFirstPos arrays
+// NOTE: fills the global LMSArray variable and the input charsCounts and charsFirstPos arrays
 void GetLMSs( unsigned int *charsCounts , int *charsFirstPos , char verbose ){
 	int arrayMaxSize, arrayGrowSize;
 	int *charsLastPos;
@@ -1214,6 +1236,12 @@ void InducedSort( unsigned int *bucketSize , int *bucketStartPos , char verbose 
 	}
 }
 
+// TODO: implement BWT as wavelet tree:
+//  - select (k) or (n-k) as first[2]={n,k} ; second[2])={k,0} ; result=(first[bit@level]-second[bit@level])
+//  - blocks of 64 chars, but SA interval of 32 ( (pos&31==0) , SA_samples[2] @ ((pos>>5)&1) )
+//  - sort chars by number of occurrences (or just "$,N" the same, last 2 chars the most frequent ones)
+//  - variable length bits per char; process chars bottom up; depth-first while num chars in level is > 2; set chars bit to 0/1 at level
+//  - level_size=bwt_size; k=(alphabet_size-1); n=sorted_counts[k]; while(n<(level_size/2)) n+=sorted_counts[--k]; ...
 void FMI_BuildIndex(char *inputText, unsigned int inputTextSize, unsigned char **lcpArrayPointer, char verbose){
 	unsigned int letterId, i, n;
 	unsigned int textPos, samplePos;
@@ -1223,9 +1251,10 @@ void FMI_BuildIndex(char *inputText, unsigned int inputTextSize, unsigned char *
 	unsigned int progressCounter, progressStep;
 	#ifdef DEBUG_INDEX
 	unsigned int bwtPos, prevLetterId, k;
-	unsigned int numRuns, sizeRun, longestRun;
+	unsigned int numRuns, sizeRun, longestRun, *runSizesCount;
 	struct timeb startTime, endTime;
 	double elapsedTime;
+	long long unsigned int totalSize;
 	#endif
 	/*
 	if(verbose){
@@ -1283,6 +1312,22 @@ void FMI_BuildIndex(char *inputText, unsigned int inputTextSize, unsigned char *
 	LMSArray = NULL;
 	GetLMSs(letterCounts,letterLMSStartPos,verbose);
 	SortLMSs(letterLMSStartPos,verbose);
+
+	#ifdef DEBUG_INDEX
+	if(verbose){
+		printf(":: ");
+		for(i=0;i<ALPHABETSIZE;i++){
+			totalSize=(((long long unsigned)letterCounts[i]*100ULL)/(long long unsigned)bwtSize);
+			printf("#'%c'=%d(%d%%) ",LETTERCHARS[i],letterCounts[i],(int)totalSize);
+		}
+		printf("\n");
+		// total number of bits in wavelet tree: 3 bits/levels for "$,N,A,C" and 2 bits/levels for "G,T"
+		totalSize = 3ULL*(long long unsigned)(letterCounts[0]+letterCounts[1]+letterCounts[2]+letterCounts[3]);
+		totalSize += 2ULL*(long long unsigned)(letterCounts[4]+letterCounts[5]);
+		// number of bytes in wavelet tree + rank&select samples (interval=64) + SA samples (interval=32)
+		printf(":: Size of index with wavelet-tree = %.2lf MB\n",(double)((totalSize/8)+(totalSize/64)*4+(bwtSize/32)*4)/1000000.0);
+	}
+	#endif
 	
 	#ifdef FILL_INDEX
 	numSamples = ( ( ( bwtSize - 1 ) >> SAMPLEINTERVALSHIFT ) + 1 ); // blocks of 32 chars (the last used pos is (bwtSize-1))
@@ -1421,6 +1466,8 @@ void FMI_BuildIndex(char *inputText, unsigned int inputTextSize, unsigned char *
 	numRuns=1;
 	sizeRun=1;
 	longestRun=0;
+	runSizesCount=(unsigned int *)malloc(1*sizeof(unsigned int));
+	runSizesCount[0]=0;
 	k = FMI_PositionInText(0); // position in the text of the top BWT position (should be equal to (bwtSize-1))
 	for(bwtPos=1;bwtPos<bwtSize;bwtPos++){ // compare current position with position above
 		if(verbose){
@@ -1452,7 +1499,12 @@ void FMI_BuildIndex(char *inputText, unsigned int inputTextSize, unsigned char *
 		letterId = GetCharIdAtBWTPos(bwtPos);
 		if( prevLetterId == letterId ) sizeRun++;
 		else {
-			if( sizeRun > longestRun ) longestRun = sizeRun;
+			if( sizeRun > longestRun ){
+				runSizesCount = (unsigned int *)realloc(runSizesCount,(sizeRun+1)*sizeof(unsigned int));
+				for(n=(longestRun+1);n<=sizeRun;n++) runSizesCount[n] = 0;
+				longestRun = sizeRun;
+			}
+			runSizesCount[sizeRun]++;
 			sizeRun = 1;
 			numRuns++;
 		}
@@ -1465,11 +1517,21 @@ void FMI_BuildIndex(char *inputText, unsigned int inputTextSize, unsigned char *
 	}
 	if(verbose){
 		printf(" OK\n");
-		printf(":: Number of char runs = %u (%.2lf%%)\n",numRuns,((double)(numRuns*100)/(double)bwtSize));
+		printf(":: Number of char runs = %u (%.2lf%%)\n",numRuns,(((double)numRuns*100.0)/(double)bwtSize));
 		printf(":: Average run length = %.2lf (max = %u)\n",((double)bwtSize/(double)numRuns),longestRun);
+		n=0;
+		sizeRun=0;
+		for(k=0;k<=longestRun;k++){
+			if(runSizesCount[k]>n){
+				n=runSizesCount[k];
+				sizeRun=k;
+			}
+		}
+		printf(":: Most frequent run length = %u (%.2lf%%)\n",sizeRun,(((double)n*100.0)/(double)numRuns));
 		printf("> Checking LF samples ");
 		fflush(stdout);
 	}
+	free(runSizesCount);
 	for(i=0;i<ALPHABETSIZE;i++){ // initialize counters
 		if(letterStartPos[i]!=0) letterCounts[i]=(letterStartPos[i]-1);
 		else letterCounts[i]=0;

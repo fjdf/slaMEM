@@ -1,3 +1,17 @@
+/* ================================================================= *
+ *  slamem.c : Main application                                      *
+ *                                                                   *
+ *  slaMEM: MUMmer-like tool to retrieve Maximum Exact Matches using *
+ *          an FM-Index and a Sampled Longest Common Prefix Array    *
+ *                                                                   *
+ *  Copyright (c) 2013, Francisco Fernandes <fjdf@kdbio.inesc-id.pt> *
+ *  Knowledge Discovery in Bioinformatics group (KDBIO/INESC-ID)     *
+ *  All rights reserved                                              *
+ *                                                                   *
+ *  This file is subject to the terms and conditions defined in the  *
+ *  file 'LICENSE', which is part of this source code package.       *
+ * ================================================================= */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include "tools.h"
@@ -6,7 +20,7 @@
 #include "lcparray.h"
 #include "graphics.h"
 
-#define VERSION "0.7"
+#define VERSION "0.7.1"
 
 //#define BENCHMARK 1
 #if defined(unix) && defined(BENCHMARK)
@@ -211,7 +225,10 @@ typedef struct _MEMInfo {
 } MEMInfo;
 
 int MEMInfoSortFunction(const void *a, const void *b){
-	return ( (((MEMInfo *)a)->refPos) - (((MEMInfo *)b)->refPos) );
+	int diff;
+	diff = ( (((MEMInfo *)a)->refPos) - (((MEMInfo *)b)->refPos) );
+	if(diff==0) diff = ( (((MEMInfo *)a)->queryPos) - (((MEMInfo *)b)->queryPos) );
+	return diff;
 }
 
 void SortMEMsFile(char *memsFilename){
@@ -444,7 +461,7 @@ void CleanFasta(char *fastafilename){
 	free(cleanfilename);
 	printf(" OK\n");
 	printf(":: %d total chars",charcount);
-	if(invalidcharcount!=0) printf(" (%d non ACGT chars removed) ",invalidcharcount);
+	if(invalidcharcount!=0) printf(" (%d non ACGT chars removed)",invalidcharcount);
 	if(sequencecount>1) printf(" ; %d sequences merged",sequencecount);
 	printf("\n");
 	printf("> Done!\n");
@@ -456,7 +473,7 @@ void CleanFasta(char *fastafilename){
 
 // TODO: output Multi-MEMS
 int main(int argc, char *argv[]){
-	int i, n, mode, numFiles, numSeqsInFirstFile, outFileArgNum, argBothStrands, argNoNs, argMinMemSize;
+	int i, n, mode, numFiles, numSeqsInFirstFile, refFileArgNum, argBothStrands, argNoNs, argMinMemSize;
 	char *outFilename;
 	printf("[ slaMEM v%s ]\n\n",VERSION);
 	if(argc<3){
@@ -502,7 +519,7 @@ int main(int argc, char *argv[]){
 	mode=0;
 	//if( ParseArgument(argc,argv,"M",0) ) mode=0; // MEMs mode
 	argNoNs=ParseArgument(argc,argv,"N",0);
-	outFileArgNum=(-1);
+	refFileArgNum=(-1);
 	numSeqsInFirstFile=0;
 	numFiles=0;
 	numSequences=0; // initialize global variable needed by sequence functions
@@ -515,7 +532,7 @@ int main(int argc, char *argv[]){
 		n = LoadSequencesFromFile( argv[i] , ((numFiles==0)?1:0) , argNoNs ); // load first seq of reference file only
 		if(n!=0) numFiles++;
 		if(numFiles==1){ // reference file
-			outFileArgNum=i;
+			refFileArgNum=i;
 			numSeqsInFirstFile=n;
 		}
 	}
@@ -528,8 +545,8 @@ int main(int argc, char *argv[]){
 	argMinMemSize=ParseArgument(argc,argv,"L",1);
 	if(argMinMemSize==(-1)) argMinMemSize=50; // default minimum MEM length is 50
 	n=ParseArgument(argc,argv,"O",2);
-	if(n!=(-1)) outFileArgNum=n; // default output base filename is the ref filename
-	outFilename=AppendToBasename(argv[outFileArgNum],"-mems.txt");
+	if(n==(-1)) outFilename=AppendToBasename(argv[refFileArgNum],"-mems.txt"); // default output base filename is the ref filename
+	else outFilename=argv[n];
 	switch(mode){
 		case 0:
 			GetMEMs(numSeqsInFirstFile,numSequences,argMinMemSize,argBothStrands,outFilename);
@@ -538,7 +555,7 @@ int main(int argc, char *argv[]){
 			exitMessage("Invalid arguments");
 			break;
 	}
-	free(outFilename);
+	if(n==(-1)) free(outFilename);
 	DeleteAllSequences();
 	printf("> Done!\n");
 	#ifdef PAUSE_AT_EXIT

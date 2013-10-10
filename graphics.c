@@ -1,3 +1,17 @@
+/* ================================================================= *
+ *  graphics.c : Graphical visualizations                            *
+ *                                                                   *
+ *  slaMEM: MUMmer-like tool to retrieve Maximum Exact Matches using *
+ *          an FM-Index and a Sampled Longest Common Prefix Array    *
+ *                                                                   *
+ *  Copyright (c) 2013, Francisco Fernandes <fjdf@kdbio.inesc-id.pt> *
+ *  Knowledge Discovery in Bioinformatics group (KDBIO/INESC-ID)     *
+ *  All rights reserved                                              *
+ *                                                                   *
+ *  This file is subject to the terms and conditions defined in the  *
+ *  file 'LICENSE', which is part of this source code package.       *
+ * ================================================================= */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
