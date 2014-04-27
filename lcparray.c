@@ -18,7 +18,7 @@
 #include "lcparray.h"
 #include "bwtindex.h"
 
-#define DEBUGLCP 1
+//#define DEBUGLCP 1
 //#define BUILDLCP 1 // if we want to build the LCP array here or use the lcparray passed as argument
 
 #ifdef DEBUGLCP
@@ -42,21 +42,22 @@
 #define BWTBLOCKMASK 63
 #define BWTBLOCKSHIFT 6
 
-typedef struct _LCPSamplesBlock {
-	int baseBwtPos;
-	int bigLCPsCount;
-	int bigPLPsCount;
-	unsigned char sourceLCP[BLOCKSIZE];
-	signed char prefixLinkPointer[BLOCKSIZE];
+// TODO: output statistics to evaluate the need for baseBwtPos (how many followed positions if this variable did not exist)
+typedef struct _LCPSamplesBlock {				// each block stores 64 LCP samples
+	unsigned char sourceLCP[BLOCKSIZE];			// sampled LCP values lower than 255
+	signed char prefixLinkPointer[BLOCKSIZE];	// sampled PSV/NSV values with absolute value lower than 128
+	unsigned int baseBwtPos;					// BWT position corresponding to the first LCP sample in this block
+	int bigLCPsCount;							// number of oversized LCP values before this block
+	int bigPLPsCount;							// number of oversized PSV/NSV values before this block
 } LCPSamplesBlock;
 
-typedef struct _SampledPosMarks {
-	unsigned long long int bits;
-	int marksCount;
+typedef struct _SampledPosMarks {	// each block corresponds to 64 positions in the BWT
+	unsigned long long int bits;	// the bit is set to 1 if there is an LCP sample at that BWT position
+	unsigned int marksCount;		// number of set bits before this block
 } SampledPosMarks;
 
 #ifdef DEBUGLCP
-// data structure if a representation by intervals was used instead
+// test data structure if a representation by intervals was used instead
 typedef struct _LCPIntervalTreeBlock {
 	unsigned char lcpValue[BLOCKSIZE];
 	unsigned char intervalSize[BLOCKSIZE];
@@ -66,43 +67,55 @@ typedef struct _LCPIntervalTreeBlock {
 #endif
 
 typedef struct _IntPair {
-	int pos;
-	int value;
+	unsigned int pos;
+	union {
+		signed int lcpvalue;
+		unsigned int distvalue;
+	};
 } IntPair;
 
-static int bwtLength;
-static int *fullLCPArray;
-static int *fullPLPArray;
-static int *fullSuffixArray;
+static unsigned int bwtLength;
 static SampledPosMarks *bwtMarkedPositions;
-static int numLCPSamples;
+static unsigned int numLCPSamples;
 static LCPSamplesBlock *sampledLCPArray;
 static LCPSamplesBlock *lastLCPSamplesBlock;
 static int numOversizedLCPs, numOversizedPLPs;
-static int *extraLCPvalues, *extraPLPvalues;
-
-static unsigned long long int *offsetMasks64bits;
-static int *perByteCounts;
+static int *extraLCPvalues;
+static unsigned int *extraPLPvalues;
 
 #ifdef DEBUGLCP
-int testNumCalls = 0;
-int testNumFollowedPos = 0;
-int testMaxFollowedPos = 0;
+// for debugging
+static int *fullLCPArray;
+static unsigned int *fullPLPArray;
+long long int numParentCalls = 0;
+long long int testNumCalls = 0;
+long long int testNumFollowedPos = 0;
+long long int testMaxFollowedPos = 0;
+#endif
+
+static unsigned long long int *offsetMasks64bits;
+#ifndef __GNUC__
+static int *perByteCounts;
 #endif
 
 void FreeSampledSuffixArray(){
 	free(offsetMasks64bits);
+	#ifndef __GNUC__
 	free(perByteCounts);
-	if(fullSuffixArray!=NULL) free(fullSuffixArray);
-	if(fullPLPArray!=NULL) free(fullPLPArray);
-	if(fullLCPArray!=NULL) free(fullLCPArray);
+	#endif
 	free(bwtMarkedPositions);
 	free(sampledLCPArray);
 	free(extraLCPvalues);
 	free(extraPLPvalues);
+#ifdef DEBUGLCP
+	printf(":: Number of parent calls = %lld\n",numParentCalls);
+#endif
 }
 
-__inline int GetLcpPosFromBwtPos(unsigned int pos){
+#ifndef DEBUGLCP
+__inline
+#endif
+unsigned int GetLcpPosFromBwtPos(unsigned int pos){
 	SampledPosMarks *bwtBlock;
 	unsigned long long int bitsArray;
 	bwtBlock = &(bwtMarkedPositions[ (pos >> BWTBLOCKSHIFT) ]);
@@ -141,13 +154,16 @@ __inline int GetLcpPosFromBwtPos(unsigned int pos){
 }
 
 // Retrieves the LCP value from the specified Sampled LCP Array position
-__inline int GetLcpValueFromLcpPos(int pos){
+#ifndef DEBUGLCP
+__inline
+#endif
+int GetLcpValueFromLcpPos(unsigned int pos){
 	LCPSamplesBlock *lcpBlock;
 	int lcp, extraPos;
 	lcpBlock = &(sampledLCPArray[ (pos >> BLOCKSHIFT) ]);
 	pos = (pos & BLOCKMASK);
 	lcp = (int)(lcpBlock->sourceLCP[pos]);
-	if( lcp != UCHAR_MAX ) return lcp; // if not oversized value, return directly
+	if( lcp != (int)UCHAR_MAX ) return lcp; // if not oversized value, return directly
 	if( (pos < BLOCKHALF) || (lcpBlock == lastLCPSamplesBlock) ){ // position in the 1st half of the block
 		extraPos = (lcpBlock->bigLCPsCount); // the count is up to but NOT including the 0-th position
 		pos++; // to include the 0-th position
@@ -167,13 +183,13 @@ __inline int GetLcpValueFromLcpPos(int pos){
 }
 
 int GetLCP(unsigned int bwtpos){
-	int lcpPos = GetLcpPosFromBwtPos(bwtpos);
+	unsigned int lcpPos = GetLcpPosFromBwtPos(bwtpos);
 	if( !(bwtMarkedPositions[(bwtpos>>BWTBLOCKSHIFT)].bits & (1ULL<<(bwtpos&BWTBLOCKMASK))) ) lcpPos++; // if the position is not marked, its LCP is equal to the one of the marked position ahead
 	return GetLcpValueFromLcpPos(lcpPos);
 }
 
 /*
-int GetDepth(int lcpPos){
+int GetDepth(unsigned int lcpPos){
 	int lcp, nextlcp;
 	lcp = GetLcpValueFromLcpPos(lcpPos);
 	lcpPos++;
@@ -184,7 +200,7 @@ int GetDepth(int lcpPos){
 }
 */
 
-int IsTopCorner(int lcpPos){
+int IsTopCorner(unsigned int lcpPos){
 	return ( (lcpPos != (numLCPSamples-1)) && (GetLcpValueFromLcpPos(lcpPos) < GetLcpValueFromLcpPos(lcpPos+1)) );
 }
 
@@ -230,11 +246,11 @@ int GetBwtPosFromLcpPos(int lcpPos, int bwtPos){
 */
 
 // Retrieves the position in the full array (BWT) of a position in the sampled array
-int GetBwtPosFromLcpPos(int lcpPos){
+unsigned int GetBwtPosFromLcpPos(unsigned int lcpPos){
 	LCPSamplesBlock *lcpBlock;
 	SampledPosMarks *bwtBlock;
 	unsigned long long int bitMask;
-	int bwtPos;
+	unsigned int bwtPos;
 	lcpBlock = &(sampledLCPArray[ (lcpPos >> BLOCKSHIFT) ]);
 	bwtPos = (lcpBlock->baseBwtPos); // BWT pos of the first LCP in this LCP block
 	bwtPos = (bwtPos >> BWTBLOCKSHIFT); // BWT block number
@@ -271,45 +287,52 @@ int GetBwtPosFromLcpPos(int lcpPos){
 }
 
 /*
-void SetPrefixLinkPointer(int sourceBwtPos, int destBwtPos){
-	int lcpPos;
+void SetPrefixLinkPointer(unsigned int sourceBwtPos, unsigned int destBwtPos){
+	unsigned int lcpPos;
 	lcpPos = GetLcpPosFromBwtPos(sourceBwtPos);
 	( (sampledLCPArray[(lcpPos >> BLOCKSHIFT)]).prefixLinkPointer )[(lcpPos & BLOCKMASK)] = destBwtPos;
 }
 */
 
+// TODO: add bwtPos as argument to function, if NULL then calculate inside
 // Retrieves the prefix link pointer from the specified Sampled LCP Array position
-unsigned int GetPrefixLinkFromLcpPos(int pos){
+unsigned int GetPrefixLinkFromLcpPos(unsigned int pos){
 	LCPSamplesBlock *lcpBlock;
-	int distance, bwtPos, extraPos;
-	bwtPos = GetBwtPosFromLcpPos(pos);
+	int distance, extraPos;
+	unsigned int bwtPos;
 	lcpBlock = &(sampledLCPArray[ (pos >> BLOCKSHIFT) ]);
-	pos = (pos & BLOCKMASK);
-	distance = (int)(lcpBlock->prefixLinkPointer[pos]);
-	if( distance == 0 ){ // get the large value from the extra array
-		if( (pos < BLOCKHALF) || (lcpBlock == lastLCPSamplesBlock) ){ // position in the 1st half of the block
-			extraPos = (lcpBlock->bigPLPsCount); // the count is up to but NOT including the 0-th position
-			pos++; // to include the 0-th position
-			while( pos ){
-				pos--;
-				if( ((lcpBlock->prefixLinkPointer)[pos]) == 0 ) extraPos++;
-			}
-		} else { // position in the 2nd half of the block
-			extraPos = (((LCPSamplesBlock *)(lcpBlock+1))->bigPLPsCount); // get the count in the next lcp block
-			pos++; // if there are no large values ahead, the extra position is already extraPos
-			while( pos != BLOCKSIZE ){
-				if( ((lcpBlock->prefixLinkPointer)[pos]) == 0 ) extraPos--;
-				pos++;
-			}
-		}
-		distance = extraPLPvalues[extraPos];
+	distance = (int)(lcpBlock->prefixLinkPointer[ (pos & BLOCKMASK) ]);
+	if(distance != 0){ // if not oversized value, add distance to position
+		bwtPos = GetBwtPosFromLcpPos(pos);
+		return (unsigned int)( bwtPos + distance );
 	}
-	return (unsigned int)( bwtPos + distance );
+	pos = (pos & BLOCKMASK); // get the large value from the extra array
+	if( (pos < BLOCKHALF) || (lcpBlock == lastLCPSamplesBlock) ){ // position in the 1st half of the block
+		extraPos = (lcpBlock->bigPLPsCount); // the count is up to but NOT including the 0-th position
+		pos++; // to include the 0-th position
+		while( pos ){
+			pos--;
+			if( ((lcpBlock->prefixLinkPointer)[pos]) == 0 ) extraPos++;
+		}
+	} else { // position in the 2nd half of the block
+		extraPos = (((LCPSamplesBlock *)(lcpBlock+1))->bigPLPsCount); // get the count in the next lcp block
+		pos++; // if there are no large values ahead, the extra position is already extraPos
+		while( pos != BLOCKSIZE ){
+			if( ((lcpBlock->prefixLinkPointer)[pos]) == 0 ) extraPos--;
+			pos++;
+		}
+	}
+	return extraPLPvalues[extraPos]; // directly output the final destination pointer (not a differential distance)
 }
 
 int GetEnclosingLCPInterval(unsigned int *topptr, unsigned int *bottomptr){
-	int lcpPos, destDepth, n;
+	unsigned int lcpPos;
+	int destDepth, n;
 	unsigned int destTopPtr, destBottomPtr;
+	#ifdef DEBUGLCP
+	//unsigned int testCount = 0;
+	numParentCalls++;
+	#endif
 	if( (*topptr) != (*bottomptr) ){ // non unitary interval, enlarge the interval using the LCP prefix links
 		lcpPos = GetLcpPosFromBwtPos((*topptr));
 		destTopPtr = GetPrefixLinkFromLcpPos(lcpPos);
@@ -330,8 +353,7 @@ int GetEnclosingLCPInterval(unsigned int *topptr, unsigned int *bottomptr){
 	} // else it is an interval with a single position
 	destTopPtr = UINT_MAX;
 	destBottomPtr = UINT_MAX;
-	n = (int)(*topptr);
-	if( (bwtMarkedPositions[(n >> BWTBLOCKSHIFT)].bits) & (1ULL << (n & BWTBLOCKMASK)) ){ // if this is a marked LCP position
+	if( (bwtMarkedPositions[((*topptr) >> BWTBLOCKSHIFT)].bits) & (1ULL << ((*topptr) & BWTBLOCKMASK)) ){ // if this is a marked LCP position
 		lcpPos = GetLcpPosFromBwtPos((*topptr));
 		if( IsTopCorner(lcpPos) ){ // top corner
 			destTopPtr = (*topptr);
@@ -398,62 +420,9 @@ int GetEnclosingLCPInterval(unsigned int *topptr, unsigned int *bottomptr){
 	return destDepth;
 }
 
-// Get the interval whose depth is equal to the LCP value at lcpPos and that contains that BWT position
-int GetEnclosingLCPIntervalFromLCPPos(int lcpPos, unsigned int *topptr, unsigned int *bottomptr){
-	int destDepth;
-	unsigned int destTopPtr, destBottomPtr;
-	destTopPtr = UINT_MAX;
-	destBottomPtr = UINT_MAX;
-	destDepth = GetLcpValueFromLcpPos(lcpPos);
-	if( IsTopCorner(lcpPos) ){ // pos is a top corner
-		destTopPtr = GetPrefixLinkFromLcpPos(lcpPos); // the top corner of the interval is found by following the prefix link
-		lcpPos++; // we are at the top pointer, so, go to the right/down
-		/*
-		if( lcpPos != numLCPSamples ) lcpPos++; // if we are not at the last position, go 2 positions to the right/down
-		n = -1; // set in case we were at the 2 last positions
-		while( (lcpPos < numLCPSamples) && ((n=GetLcpValueFromLcpPos(lcpPos)) > destDepth) ) lcpPos++; // get the pos at the right/down with the LCP lower or equal to ours
-		if( (n < destDepth) || (lcpPos == numLCPSamples) ) destBottomPtr = GetBwtPosFromLcpPos((lcpPos-1)); // the previous pos is the top pos
-		else { // if it has the same LCP as ours
-			if( IsTopCorner(lcpPos) ) destBottomPtr = GetPrefixLinkFromLcpPos(lcpPos-1);// if it's a top corner, use the prefix link of the prev pos, which is a bottom corner
-			else destBottomPtr = GetBwtPosFromLcpPos(lcpPos); // if it's a bottom corner, use it
-		}
-		*/
-		while( IsTopCorner(lcpPos) ) lcpPos++; // find the first bottom corner bellow
-		if( (lcpPos == numLCPSamples) || (GetLcpValueFromLcpPos(lcpPos+1) < destDepth) ) destBottomPtr = GetBwtPosFromLcpPos(lcpPos); // check if the first found bottom corner is already the one we want
-		else {
-			destBottomPtr = GetPrefixLinkFromLcpPos(lcpPos); // keep following prefix links until we find a bottom corner that has a position ahead with an LCP value lower than our destination LCP
-			lcpPos = GetLcpPosFromBwtPos(destBottomPtr);
-			while( (lcpPos != (numLCPSamples-1)) && (GetLcpValueFromLcpPos(lcpPos+1) >= destDepth) ){
-				destBottomPtr = GetPrefixLinkFromLcpPos(lcpPos);
-				lcpPos = GetLcpPosFromBwtPos(destBottomPtr);
-			}
-		}
-	} else { // pos is a bottom corner
-		destBottomPtr = GetBwtPosFromLcpPos(lcpPos); // this is already the bottom corner of the interval
-		lcpPos--; // we are at the bottom pointer, so, go to the left/up
-		/*
-		while( (n=GetLcpValueFromLcpPos(lcpPos)) > destDepth ) lcpPos--; // get the pos at the left with the LCP lower or equal to ours
-		if( n < destDepth ) destTopPtr = GetBwtPosFromLcpPos(lcpPos); // this is the top pos
-		else destTopPtr = GetPrefixLinkFromLcpPos(lcpPos); // if it has the same LCP as ours, use its prefix link pointer
-		*/
-		while( !IsTopCorner(lcpPos) ) lcpPos--; // find the first top corner above
-		if( GetLcpValueFromLcpPos(lcpPos) < destDepth ) destTopPtr = GetBwtPosFromLcpPos(lcpPos); // check if the first found top corner is already the one we want
-		else { // keep following prefix links until we find a top corner with an LCP value lower than our destination LCP
-			destTopPtr = GetPrefixLinkFromLcpPos(lcpPos);
-			lcpPos = GetLcpPosFromBwtPos(destTopPtr);
-			while( GetLcpValueFromLcpPos(lcpPos) >= destDepth ){
-				destTopPtr = GetPrefixLinkFromLcpPos(lcpPos);
-				lcpPos = GetLcpPosFromBwtPos(destTopPtr);
-			}
-		}
-	}
-	(*topptr) = destTopPtr;
-	(*bottomptr) = destBottomPtr;
-	return destDepth;
-}
-
-int GetLCPValuePositionInsideLCPInterval(int lcpvalue, unsigned int topptr, unsigned int bottomptr){
-	int startlcppos, endlcppos;
+/*
+unsigned int GetLCPValuePositionInsideLCPInterval(int lcpvalue, unsigned int topptr, unsigned int bottomptr){
+	unsigned int startlcppos, endlcppos;
 	#ifdef DEBUGLCP
 	int testCount = 0;
 	testNumCalls++;
@@ -481,15 +450,56 @@ int GetLCPValuePositionInsideLCPInterval(int lcpvalue, unsigned int topptr, unsi
 			return startlcppos;
 		}
 	}
-	return (-1);
+	return UINT_MAX;
 }
+*/
 
 #ifdef DEBUGLCP
+// Get the interval whose depth is equal to the LCP value at lcpPos and that contains that BWT position
+int GetEnclosingLCPIntervalFromLCPPos(unsigned int lcpPos, unsigned int *topptr, unsigned int *bottomptr){
+	int destDepth;
+	unsigned int destTopPtr, destBottomPtr;
+	destTopPtr = UINT_MAX;
+	destBottomPtr = UINT_MAX;
+	destDepth = GetLcpValueFromLcpPos(lcpPos);
+	if (IsTopCorner(lcpPos)){ // pos is a top corner
+		destTopPtr = GetPrefixLinkFromLcpPos(lcpPos); // the top corner of the interval is found by following the prefix link
+		lcpPos++; // we are at the top pointer, so, go to the right/down
+		while (IsTopCorner(lcpPos)) lcpPos++; // find the first bottom corner bellow
+		if ((lcpPos == numLCPSamples) || (GetLcpValueFromLcpPos(lcpPos + 1) < destDepth)) destBottomPtr = GetBwtPosFromLcpPos(lcpPos); // check if the first found bottom corner is already the one we want
+		else {
+			destBottomPtr = GetPrefixLinkFromLcpPos(lcpPos); // keep following prefix links until we find a bottom corner that has a position ahead with an LCP value lower than our destination LCP
+			lcpPos = GetLcpPosFromBwtPos(destBottomPtr);
+			while ((lcpPos != (numLCPSamples - 1)) && (GetLcpValueFromLcpPos(lcpPos + 1) >= destDepth)){
+				destBottomPtr = GetPrefixLinkFromLcpPos(lcpPos);
+				lcpPos = GetLcpPosFromBwtPos(destBottomPtr);
+			}
+		}
+	}
+	else { // pos is a bottom corner
+		destBottomPtr = GetBwtPosFromLcpPos(lcpPos); // this is already the bottom corner of the interval
+		lcpPos--; // we are at the bottom pointer, so, go to the left/up
+		while (!IsTopCorner(lcpPos)) lcpPos--; // find the first top corner above
+		if (GetLcpValueFromLcpPos(lcpPos) < destDepth) destTopPtr = GetBwtPosFromLcpPos(lcpPos); // check if the first found top corner is already the one we want
+		else { // keep following prefix links until we find a top corner with an LCP value lower than our destination LCP
+			destTopPtr = GetPrefixLinkFromLcpPos(lcpPos);
+			lcpPos = GetLcpPosFromBwtPos(destTopPtr);
+			while (GetLcpValueFromLcpPos(lcpPos) >= destDepth){
+				destTopPtr = GetPrefixLinkFromLcpPos(lcpPos);
+				lcpPos = GetLcpPosFromBwtPos(destTopPtr);
+			}
+		}
+	}
+	(*topptr) = destTopPtr;
+	(*bottomptr) = destBottomPtr;
+	return destDepth;
+}
+
 int GetTrueDepth(unsigned int topptr, unsigned int bottomptr){
 	int depth; // non-singular interval: source depth = min( LCP[top+1] , LCP[bottom] )
 	depth=fullLCPArray[bottomptr];
 	topptr++;
-	if( topptr!=(unsigned int)bwtLength ){
+	if( topptr!=bwtLength ){
 		if( (++bottomptr)==topptr ){
 			if( fullLCPArray[topptr]>depth ) depth=fullLCPArray[topptr]; // single position: source depth = max( LCP[pos] , LCP[pos+1] )
 		} else {
@@ -498,47 +508,46 @@ int GetTrueDepth(unsigned int topptr, unsigned int bottomptr){
 	}
 	return depth;
 }
-#endif
 
-#ifdef DEBUGLCP
 int GetTrueEnclosingLCPInterval(unsigned int *topptr, unsigned int *bottomptr){
 	int destdepth; // destination (parent) depth = max( LCP[top] , LCP[bottom+1] )
 	destdepth=fullLCPArray[(*topptr)];
 	(*bottomptr)++;
-	if( (*bottomptr)!=(unsigned int)bwtLength && fullLCPArray[(*bottomptr)]>destdepth ) destdepth=fullLCPArray[(*bottomptr)];
+	if( (*bottomptr)!=bwtLength && fullLCPArray[(*bottomptr)]>destdepth ) destdepth=fullLCPArray[(*bottomptr)];
 	while( fullLCPArray[(*topptr)]>=destdepth ) (*topptr)--; // find closest pos above with an LCP value lower than this one
-	while( (*bottomptr)!=(unsigned int)bwtLength && fullLCPArray[(*bottomptr)]>=destdepth) (*bottomptr)++; // find closest pos bellow with an LCP value lower than this one
+	while( (*bottomptr)!=bwtLength && fullLCPArray[(*bottomptr)]>=destdepth) (*bottomptr)++; // find closest pos bellow with an LCP value lower than this one
 	(*bottomptr)--; // go back/up one pos
 	return destdepth;
 }
-#endif
 
-#ifdef DEBUGLCP
 int GetTrueEnclosingLCPIntervalWithLcpValue(int lcp, unsigned int *topptr, unsigned int *bottomptr){
 	while( (*topptr)!=0 && fullLCPArray[(*topptr)]>=lcp ) (*topptr)--; // find closest pos above with an LCP value lower than this one
-	while( (*bottomptr)!=(unsigned int)bwtLength && fullLCPArray[(*bottomptr)]>=lcp) (*bottomptr)++; // find closest pos bellow with an LCP value lower than this one
+	while( (*bottomptr)!=bwtLength && fullLCPArray[(*bottomptr)]>=lcp) (*bottomptr)++; // find closest pos bellow with an LCP value lower than this one
 	(*bottomptr)--; // go back/up one pos
 	return lcp;
 }
 #endif
 
-int CompareIntPair(const void *a, const void * b){
-	return ( (((IntPair *)a)->pos) - (((IntPair *)b)->pos) );
+int CompareUnsignedIntPair(const void *a, const void * b){
+	return (int)( (((IntPair *)a)->pos) - (((IntPair *)b)->pos) );
 }
 
-// TODO: get statistics for number of intervals that do not include all the chars of the alphabet in its BWT range
+// TODO: create function that combines returning both LCP and SV simultaneously or that accepts bwtPos as argument (to prevent unneeded calls)
+// TODO: get statistics for number of sampled positions (not intervals) with lcp<minlcp and that do not include all the chars of the alphabet in its BWT range
 // TODO: implement SLCP+SV as "lcp-interval-tree":
 //  - store info of top corners only
 //  - multiple entries if it's a shared top corner
 //  - check (parentDistance==0) to distinguish between new corner or next entry of same corner
 //  - lcp-value(s), interval size(s), distance(s) to parent interval's pos in BWT (if deep corner, parentDistance=0)
 //  - benchmark avg+max results for these 3 fields on large datasets
-int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int verbose){
-	int textpos, prevtextpos;
+int BuildSampledLCPArray(char *text, unsigned int textsize, unsigned char *lcparray, int minlcp, int verbose){
+	unsigned int textpos, prevtextpos;
 	char *topstring, *bottomstring;
+	#ifndef __GNUC__
 	unsigned char byte;
-	unsigned int bwtpos;
-	int i, k, lcp, prevlcp, nextlcp, lcppos;
+	#endif
+	unsigned int bwtpos, lcppos, i;
+	int k, lcp, prevlcp, nextlcp;
 	int numTopCorners, numBottomCorners;
 	int maxTopCorners, maxBottomCorners;
 	IntPair *topCorners, *bottomCorners;
@@ -546,23 +555,29 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 	unsigned long long int mask;
 	SampledPosMarks *bwtBlock;
 	LCPSamplesBlock *lcpBlock;
-	int maxNumLCPSamples, maxNumOversizedValues;
+	unsigned int maxNumLCPSamples;
+	int maxNumOversizedValues;
 	long long int sumValues;
-	int maxValue, prefixLinkDistance;
+	long long int maxValue, prefixLinkDistance;
 	int progressCounter, progressStep;
 	#ifdef DEBUGLCP
 	unsigned int topptr, bottomptr;
 	unsigned int stopptr, sbottomptr;
 	struct timeb startTime, endTime;
 	double elapsedTime;
-	int numLcpIntervals;
-	int numBigTopLcps, numBigTopPlps, numBigTopSizes;
-	int numSharedTopCorners, avgSharedTopCornersCount, maxSharedTopCornersCount;
-	int *sharedTopCornersCount;
-	int numIncompleteLcpIntervals;
+	unsigned int numLcpIntervals;
+	unsigned int numBigTopLcps, numBigTopPlps, numBigTopSizes;
+	unsigned int numSharedTopCorners, avgSharedTopCornersCount, maxSharedTopCornersCount;
+	unsigned int *sharedTopCornersCount;
+	unsigned int numIncompleteLcpIntervals;
 	unsigned char *charsInsideInterval;
 	unsigned char bwtCharMask;
+	unsigned int numOversizedBothValues;
 	#endif
+	// TODO: remove this!
+	/**/
+	minlcp=0;
+	/**/
 	offsetMasks64bits = (unsigned long long int *)malloc(64*sizeof(unsigned long long int));
 	mask = 1ULL;
 	for(i=0;i<64;i++){
@@ -570,6 +585,7 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 		mask <<= 1;
 		mask |= 1ULL;
 	}
+	#ifndef __GNUC__
 	perByteCounts = (int *)malloc(256*sizeof(int));
 	for(i=0;i<256;i++){
 		k = 0;
@@ -580,32 +596,15 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 		}
 		perByteCounts[i] = k;
 	}
+	#endif
 	bwtLength = (textsize+1);
 	k = (((bwtLength-1)>>BWTBLOCKSHIFT)+1); // last valid pos, quotient, add one
 	bwtMarkedPositions = (SampledPosMarks *)malloc(k*sizeof(SampledPosMarks));
 	sampledLCPArray = (LCPSamplesBlock *)malloc(1*sizeof(LCPSamplesBlock));
 	extraLCPvalues = (int *)malloc(1*sizeof(int));
-	fullSuffixArray = NULL;
-	fullPLPArray = NULL;
-	fullLCPArray = NULL;
 	#ifdef BUILDLCP
 	lcparray = NULL; // to fix compiler unused variable warning
 	#endif
-	/*
-	printf("> Building full Suffix Array ... ");
-	fflush(stdout);
-	fullSuffixArray=(int *)malloc((textsize+1)*sizeof(int));
-	n=0;
-	bwtpos=0;
-	bottomptr=0;
-	fullSuffixArray[0]=textsize;
-	for(textpos=(textsize-1);textpos>0;textpos--){
-		n=(int)FMI_FollowLetter(text[textpos],&bwtpos,&bottomptr);
-		if(n!=1) exitMessage("Text matching error");
-		fullSuffixArray[bwtpos]=textpos;
-	}
-	printf("OK\n");
-	*/
 	if(verbose){ printf("> Building Sampled LCP Array "); fflush(stdout); }
 	sumValues=0;
 	maxValue=0;
@@ -627,7 +626,7 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 	prevlcp=(-1); // at the 0-th position there's no position before
 	prevtextpos=textsize; // the 0-th BWT position corresponds to the terminator symbol at the last text position
 	textpos=0;
-	for(bwtpos=1;bwtpos<=(unsigned int)bwtLength;bwtpos++){ // all BWT positions and one fake next-to-last position to fill last position
+	for(bwtpos=1;bwtpos<=bwtLength;bwtpos++){ // all BWT positions and one fake next-to-last position to fill last position
 		if(verbose){
 			if(progressCounter==progressStep){ // print progress dots
 				putchar('.');
@@ -635,11 +634,9 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 				progressCounter=0;
 			} else progressCounter++;
 		}
-		if(bwtpos!=(unsigned int)bwtLength){
-			//topstring=(char *)(text+fullSuffixArray[(bwtpos-1)]);
-			//bottomstring=(char *)(text+fullSuffixArray[bwtpos]);
+		if(bwtpos!=bwtLength){
 			#ifdef BUILDLCP
-			textpos=(int)FMI_PositionInText(bwtpos);
+			textpos=FMI_PositionInText(bwtpos);
 			topstring=(char *)(text+prevtextpos);
 			bottomstring=(char *)(text+textpos);
 			lcp=0;
@@ -653,10 +650,10 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 			#else
 			lcp = (int)lcparray[bwtpos];
 			if( lcp == (int)UCHAR_MAX ){ // if it is a large (>255) lcp, calculate its value
-				prevtextpos=(int)FMI_PositionInText((bwtpos-1));
-				textpos=(int)FMI_PositionInText(bwtpos);
-				topstring=(char *)( text + prevtextpos + (int)UCHAR_MAX ); // start checking matches 255 positions ahead
-				bottomstring=(char *)( text + textpos + (int)UCHAR_MAX );
+				prevtextpos=FMI_PositionInText((bwtpos-1));
+				textpos=FMI_PositionInText(bwtpos);
+				topstring=(char *)( text + prevtextpos + (unsigned int)UCHAR_MAX ); // start checking matches 255 positions ahead
+				bottomstring=(char *)( text + textpos + (unsigned int)UCHAR_MAX );
 				if(textpos>prevtextpos) prevtextpos=textpos; // use to check when we reach the end of the text, because the '\0' terminator might not be present
 				while(((*topstring)==(*bottomstring)) && (prevtextpos!=textsize)){
 					topstring++;
@@ -711,15 +708,15 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 	lastLCPSamplesBlock = &(sampledLCPArray[(numLCPSamples >> BLOCKSHIFT)]);
 	if(verbose){
 		printf(" OK\n");
-		printf(":: %.2lf%% samples (%d of %d)\n",((double)numLCPSamples/(double)bwtLength)*100.0,numLCPSamples,bwtLength);
-		printf(":: %.2lf%% oversized samples (%d of %d)\n",((double)numOversizedLCPs/(double)numLCPSamples)*100.0,numOversizedLCPs,numLCPSamples);
-		printf(":: Average LCP value = %d (max=%d)\n",(int)(sumValues/(long long)bwtLength),maxValue);
+		printf(":: %.2lf%% samples (%u of %u)\n",((double)numLCPSamples/(double)bwtLength)*100.0,numLCPSamples,bwtLength);
+		printf(":: %.2lf%% oversized samples (%d of %u)\n",((double)numOversizedLCPs/(double)numLCPSamples)*100.0,numOversizedLCPs,numLCPSamples);
+		printf(":: Average LCP value = %d (max=%lld)\n",(int)(sumValues/(long long int)bwtLength),maxValue);
 	}
 	#ifdef DEBUGLCP
 	if(verbose){ printf("> Testing Sampled LCP Array "); fflush(stdout); }
 	ftime(&startTime);
-	k=(-1);
-	for(bwtpos=0;bwtpos<(unsigned int)bwtLength;bwtpos++){
+	i=0;
+	for(bwtpos=0;bwtpos<bwtLength;bwtpos++){
 		if(verbose){
 			if(progressCounter==progressStep){ // print progress dots
 				putchar('.');
@@ -728,12 +725,12 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 			} else progressCounter++;
 		}
 		if(GetLCP(bwtpos)!=fullLCPArray[bwtpos]) break;
-		if(((bwtpos+1)==(unsigned int)bwtLength) || (fullLCPArray[bwtpos]!=fullLCPArray[bwtpos+1])){ // only check marked positions
-			k=GetLcpPosFromBwtPos(bwtpos);
-			if(GetBwtPosFromLcpPos(k)!=(int)bwtpos) break;
+		if(((bwtpos+1)==bwtLength) || (fullLCPArray[bwtpos]!=fullLCPArray[bwtpos+1])){ // only check marked positions
+			i=GetLcpPosFromBwtPos(bwtpos);
+			if(GetBwtPosFromLcpPos(i)!=bwtpos) break;
 		}
 	}
-	if((bwtpos==(unsigned int)bwtLength) && (k==(numLCPSamples-1))){
+	if((bwtpos==bwtLength) && (i==(numLCPSamples-1))){
 		ftime(&endTime);
 		elapsedTime = ( ((endTime.time) + (endTime.millitm)/1000.0) - ((startTime.time) + (startTime.millitm)/1000.0) );
 		if(verbose){
@@ -741,22 +738,22 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 			printf(":: Done in %.3lf seconds\n",elapsedTime);
 		}
 	}
-	else printf("\n> ERROR: sampledLCP[%u]=%d =!= fullLCP[%u]=%d (bwtPos=%u->lcpPos=%d->bwtPos=%d) \n",bwtpos,GetLCP(bwtpos),bwtpos,fullLCPArray[bwtpos],bwtpos,k,GetBwtPosFromLcpPos(k));
+	else printf("\n> ERROR: sampledLCP[%u]=%d =!= fullLCP[%u]=%d (bwtPos=%u->lcpPos=%d->bwtPos=%d) \n",bwtpos,GetLCP(bwtpos),bwtpos,fullLCPArray[bwtpos],bwtpos,i,GetBwtPosFromLcpPos(i));
 	#endif
 	if(verbose){ printf("> Collecting Previous/Next Smaller Values "); fflush(stdout); }
 	#ifdef DEBUGLCP
-	fullPLPArray=(int *)malloc(numLCPSamples*sizeof(int));
+	fullPLPArray=(unsigned int *)malloc(numLCPSamples*sizeof(unsigned int));
 	fullPLPArray[0]=0;
 	fullPLPArray[(numLCPSamples-1)]=(bwtLength-1);
 	#endif
 	progressStep=(numLCPSamples/10);
 	progressCounter=0;
-	maxNumOversizedValues=(numLCPSamples/100); // allocate 1% of the total number of sampled values
-	oversizedCorners=(IntPair *)malloc((maxNumOversizedValues+1)*sizeof(IntPair)); // +1 if textsize is <100 and value above gives 0
+	maxNumOversizedValues=((numLCPSamples/100)+1); // allocate 1% of the total number of sampled values
+	oversizedCorners=(IntPair *)malloc((maxNumOversizedValues+1)*sizeof(IntPair)); // +1 above if textsize is <100 and value above gives 0 ; +1 here because last pos numOversizedPLPs=1 will be used later
 	sampledLCPArray[0].prefixLinkPointer[0]=0; // set value for first pos
-	//sampledLCPArray[0].bigPLPsCount=(-1);
+	//sampledLCPArray[0].bigPLPsCount=(-1); // this will be set later together with all the other values
 	oversizedCorners[0].pos=0;
-	oversizedCorners[0].value=0;
+	oversizedCorners[0].distvalue=0;
 	numOversizedPLPs=1; // first value already set
 	sumValues=0;
 	maxValue=0;
@@ -775,9 +772,10 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 	numSharedTopCorners=0;
 	avgSharedTopCornersCount=0;
 	maxSharedTopCornersCount=0;
-	sharedTopCornersCount=(int *)malloc(maxTopCorners*sizeof(int));
+	sharedTopCornersCount=(unsigned int *)malloc(maxTopCorners*sizeof(unsigned int));
 	charsInsideInterval=(unsigned char *)malloc(maxTopCorners*sizeof(unsigned char));
 	prefixLinkDistance=0;
+	numOversizedBothValues=0;
 	#endif
 	bwtBlock=&(bwtMarkedPositions[0]);
 	mask=1ULL; // mask for offset in current BWT block
@@ -840,16 +838,19 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 				fullPLPArray[lcppos]=(topCorners[k].pos);
 				#endif
 				//(lcpBlock->prefixLinkPointer)[i] = topCornersPos[k]; // link current pos with LCP pos above
-				prefixLinkDistance = ( topCorners[k].pos - (int)bwtpos ); // =(destination-source)<0
+				prefixLinkDistance = ( (long long int)topCorners[k].pos - (long long int)bwtpos ); // =(destination-source)<0
 				if( (prefixLinkDistance>(-128)) && (prefixLinkDistance<128) ) (lcpBlock->prefixLinkPointer)[i] = (signed char)prefixLinkDistance; // link current pos with LCP pos above
 				else { // if value is <=(-128) or >=(+128) store it in the extra array
 					if( numOversizedPLPs == maxNumOversizedValues ){ // realloc array if needed
-						maxNumOversizedValues += (numLCPSamples/100); // allocate 1% of the total number of sampled values each time
+						maxNumOversizedValues += ((numLCPSamples/100)+1); // allocate 1% of the total number of sampled values each time
 						oversizedCorners = (IntPair *)realloc(oversizedCorners,(maxNumOversizedValues+1)*sizeof(IntPair));
 					}
 					(lcpBlock->prefixLinkPointer)[i] = 0; // mark as oversized corner prefix link
+					#ifdef DEBUGLCP
+					if((lcpBlock->sourceLCP[i])==UCHAR_MAX) numOversizedBothValues++;
+					#endif
 					oversizedCorners[numOversizedPLPs].pos = lcppos;
-					oversizedCorners[numOversizedPLPs].value = prefixLinkDistance; // add oversized prefix links to separate array
+					oversizedCorners[numOversizedPLPs].distvalue = topCorners[k].pos; // add oversized prefix links to separate array
 					numOversizedPLPs++;
 				}
 				if(prefixLinkDistance<0) prefixLinkDistance=(-prefixLinkDistance);
@@ -863,12 +864,12 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 				maxTopCorners++;
 				topCorners=(IntPair *)realloc(topCorners,maxTopCorners*sizeof(IntPair));
 				#ifdef DEBUGLCP
-				sharedTopCornersCount=(int *)realloc(sharedTopCornersCount,maxTopCorners*sizeof(int));
+				sharedTopCornersCount=(unsigned int *)realloc(sharedTopCornersCount,maxTopCorners*sizeof(unsigned int));
 				charsInsideInterval=(unsigned char *)realloc(charsInsideInterval,maxTopCorners*sizeof(unsigned char));
 				#endif
 			}
 			topCorners[numTopCorners].pos = bwtpos; // add this pos to the list of top corners
-			topCorners[numTopCorners].value = lcp;
+			topCorners[numTopCorners].lcpvalue = lcp;
 			#ifdef DEBUGLCP
 			sharedTopCornersCount[numTopCorners]=0;
 			charsInsideInterval[numTopCorners]=bwtCharMask;
@@ -878,25 +879,28 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 		} else if( nextlcp < lcp ){ // bottom corner
 			lcp = nextlcp; // now the LCP to consider is the next/bottom one
 			k = (numBottomCorners-1);
-			while( k!=-1 && (bottomCorners[k].value)>lcp ){ // get all pos behind/above with LCP higher than current LCP
-				i = GetLcpPosFromBwtPos((unsigned int)(bottomCorners[k].pos));
+			while( k!=-1 && (bottomCorners[k].lcpvalue)>lcp ){ // get all pos behind/above with LCP higher than current LCP
+				i = GetLcpPosFromBwtPos((bottomCorners[k].pos));
 				oversizedCorners[numOversizedPLPs].pos = i; // set this here to prevent another call to get the SLCP position; if the PLP is not oversized, it will be replaced by the next oversized one
 				#ifdef DEBUGLCP
-				fullPLPArray[i]=(int)bwtpos;
+				fullPLPArray[i]=bwtpos;
 				#endif
 				lcpBlock = &(sampledLCPArray[(i >> BLOCKSHIFT)]);
 				i = (i & BLOCKMASK);
 				//(lcpBlock->prefixLinkPointer)[i] = bwtpos; // link LCP pos above with current pos
-				prefixLinkDistance = ( (int)bwtpos - (bottomCorners[k].pos) ); // =(destination-source)>0
+				prefixLinkDistance = ( (long long int)bwtpos - (long long int)(bottomCorners[k].pos) ); // =(destination-source)>0
 				if( (prefixLinkDistance>(-128)) && (prefixLinkDistance<128) ) (lcpBlock->prefixLinkPointer)[i] = (signed char)prefixLinkDistance; // link LCP pos above with current pos
 				else { // if value is <=(-128) or >=(+128) store it in the extra array
 					if( numOversizedPLPs == maxNumOversizedValues ){ // realloc array if needed
-						maxNumOversizedValues += (numLCPSamples/100); // allocate 1% of the total number of sampled values each time
+						maxNumOversizedValues += ((numLCPSamples/100)+1); // allocate 1% of the total number of sampled values each time
 						oversizedCorners = (IntPair *)realloc(oversizedCorners,(maxNumOversizedValues+1)*sizeof(IntPair));
 					}
 					(lcpBlock->prefixLinkPointer)[i] = 0; // mark as oversized corner prefix link
-					//oversizedCorners[numOversizedPLPs].pos = GetLcpPosFromBwtPos((unsigned int)(bottomCorners[k].pos));
-					oversizedCorners[numOversizedPLPs].value = prefixLinkDistance; // add oversized prefix links to separate array
+					#ifdef DEBUGLCP
+					if((lcpBlock->sourceLCP[i])==UCHAR_MAX) numOversizedBothValues++;
+					#endif
+					//oversizedCorners[numOversizedPLPs].pos = GetLcpPosFromBwtPos((unsigned int)(bottomCorners[k].pos)); // already set above
+					oversizedCorners[numOversizedPLPs].distvalue = bwtpos; // add oversized prefix links to separate array
 					numOversizedPLPs++;
 				}
 				if(prefixLinkDistance<0) prefixLinkDistance=(-prefixLinkDistance);
@@ -913,11 +917,11 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 				bottomCorners=(IntPair *)realloc(bottomCorners,maxBottomCorners*sizeof(IntPair));
 			}
 			bottomCorners[numBottomCorners].pos = bwtpos; // add this pos to the list of bottom corners
-			bottomCorners[numBottomCorners].value = lcp;
+			bottomCorners[numBottomCorners].lcpvalue = lcp;
 			numBottomCorners++;
 			i = 0; // number of deleted top corners this time
 			k = (numTopCorners-1);
-			while( k!=-1 && (topCorners[k].value)>=lcp ){ // get all top corner pos behind/above with LCP higher or equal than current LCP
+			while( k!=-1 && (topCorners[k].lcpvalue)>=lcp ){ // get all top corner pos behind/above with LCP higher or equal than current LCP
 				numTopCorners--; // delete this top corner because it has already been linked to another, and no other is going to link to him
 				#ifdef DEBUGLCP
 				sharedTopCornersCount[k]++;
@@ -926,7 +930,7 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 					avgSharedTopCornersCount+=sharedTopCornersCount[k];
 					if(sharedTopCornersCount[k]>maxSharedTopCornersCount) maxSharedTopCornersCount=sharedTopCornersCount[k];
 				}
-				if(topCorners[k].value>=255) numBigTopLcps++;
+				if(topCorners[k].lcpvalue>=255) numBigTopLcps++;
 				if((bwtpos-topCorners[k].pos)>=255) numBigTopSizes++;
 				if(charsInsideInterval[k]!=0xFF) numIncompleteLcpIntervals++;
 				#endif
@@ -935,10 +939,10 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 			}
 			#ifdef DEBUGLCP
 			numLcpIntervals += i; // if we deleted i top corners, it means i intervals were closed
-			if( i==0 || (topCorners[k+1].value)!=lcp ){ // if it's a shared top margin, it's not deleted yet (i=0), but we closed another interval
+			if( i==0 || (topCorners[k+1].lcpvalue)!=lcp ){ // if it's a shared top margin, it's not deleted yet (i=0), but we closed another interval
 				numLcpIntervals++; // if we did not end at the same level as the last deleted top margin, we are in the middle of another (shared) top margin, which means another interval
 				sharedTopCornersCount[k]++;
-				if(topCorners[k].value>=255) numBigTopLcps++;
+				if(topCorners[k].lcpvalue>=255) numBigTopLcps++;
 				if((bwtpos-topCorners[k].pos)>=255) numBigTopSizes++;
 			}
 			#endif
@@ -964,23 +968,25 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 	lcppos = (numLCPSamples-1);  // set value for last pos
 	sampledLCPArray[(lcppos >> BLOCKSHIFT)].prefixLinkPointer[(lcppos & BLOCKMASK)] = 0;
 	oversizedCorners[numOversizedPLPs].pos = lcppos;
-	oversizedCorners[numOversizedPLPs].value = 0; // zero distance from (bwtLength-1);
+	oversizedCorners[numOversizedPLPs].distvalue = (bwtLength-1); // zero distance from (bwtLength-1);
 	numOversizedPLPs++;
-	qsort(oversizedCorners,numOversizedPLPs,sizeof(IntPair),CompareIntPair); // sort oversized PLP values by their position in the SLCP array
-	extraPLPvalues = (int *)malloc(numOversizedPLPs*sizeof(int)); // final array of oversized values
-	lcppos = (-1);
+	qsort(oversizedCorners,numOversizedPLPs,sizeof(IntPair),CompareUnsignedIntPair); // sort oversized PLP values by their position in the SLCP array
+	extraPLPvalues = (unsigned int *)malloc(numOversizedPLPs*sizeof(unsigned int)); // final array of oversized values
+	lcppos = 0;
 	lcpBlock = &(sampledLCPArray[0]);
-	lcpBlock--; // start before the first position so the 0-th block gets updated in the first iteration of the loop
-	for( i=0 ; i<numOversizedPLPs ; i++ ){ // fill the extra values array and the current extra values count on each LCP block
-		extraPLPvalues[i] = oversizedCorners[i].value;
-		k = oversizedCorners[i].pos;
-		while( lcppos < k ){
-			lcppos++;
-			if( (lcppos & BLOCKMASK) == 0 ){ // if we reached the end of this block, go to next block and save the current count of oversized PLPs
-				lcpBlock++;
-				(lcpBlock->bigPLPsCount) = (i-1); // position in the extra array of the last oversized value before this position in the lcp array
-			}
+	for( k=0 ; k<numOversizedPLPs ; k++ ){ // fill the extra values array and the current extra values count on each LCP block
+		extraPLPvalues[k] = oversizedCorners[k].distvalue;
+		i = oversizedCorners[k].pos;
+		while( lcppos <= i ){ // save the current count of oversized PLPs in all blocks before this oversized PLP position
+			(lcpBlock->bigPLPsCount) = (k-1); // the blocks before or at the k-th oversized value , will have the (k-1)-th entry stored, the previous oversized position behind
+			lcppos += BLOCKSIZE;
+			lcpBlock++;
 		}
+	}
+	while( lcppos < numLCPSamples ){ // although never used, fill the remaining oversized PLP counts in all blocks until the end of the sampled LCP array
+		(lcpBlock->bigPLPsCount) = (numOversizedPLPs-1);
+		lcppos += BLOCKSIZE;
+		lcpBlock++;
 	}
 	free(oversizedCorners);
 	//SetPrefixLinkPointer(0,0);
@@ -992,15 +998,18 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 	//indexLCPInfo[textsize].prefixLinkPointer = textsize;
 	if(verbose){
 		printf(" OK\n");
-		printf(":: %.2lf%% oversized values (%d of %d)\n",((double)numOversizedPLPs/(double)numLCPSamples)*100.0,numOversizedPLPs,numLCPSamples);
-		printf(":: Average SV distance = %.2lf (max=%d)\n",((double)sumValues/(double)numLCPSamples),maxValue);
-		k = (int)( sizeof(*bwtMarkedPositions)*(((bwtLength-1)>>BWTBLOCKSHIFT)+1) + sizeof(*sampledLCPArray)*((numLCPSamples>>BLOCKSHIFT)+1) + sizeof(*extraLCPvalues)*numOversizedLCPs + sizeof(*extraPLPvalues)*numOversizedPLPs );
-		printf(":: Total SLCP+SV structure size = %.1lf MB (%d bytes)\n", (double)( (unsigned int)((((bwtLength-1)>>BWTBLOCKSHIFT)+1)*sizeof(SampledPosMarks)) + (unsigned int)((((numLCPSamples-1)>>BLOCKSHIFT)+1)*sizeof(LCPSamplesBlock)) + (unsigned int)((numOversizedLCPs+numOversizedPLPs)*sizeof(int)) ) / (double)1000000U , k);
+		printf(":: %.2lf%% oversized values (%d of %u)\n",((double)numOversizedPLPs/(double)numLCPSamples)*100.0,numOversizedPLPs,numLCPSamples);
+		printf(":: Average SV distance = %.2lf (max=%lld)\n",((double)sumValues/(double)numLCPSamples),maxValue);
+		sumValues = (long long int)( sizeof(*bwtMarkedPositions)*(((bwtLength-1)>>BWTBLOCKSHIFT)+1) + sizeof(*sampledLCPArray)*(((numLCPSamples-1)>>BLOCKSHIFT)+1) + sizeof(*extraLCPvalues)*numOversizedLCPs + sizeof(*extraPLPvalues)*numOversizedPLPs );
+		printf(":: Total SLCP+SV structure size = %.1lf MB (%.1lf bytes/char)\n",((double)sumValues)/((double)1000000U),((double)sumValues)/((double)bwtLength));
 		#ifdef DEBUGLCP
-		k = (int)( sizeof(SampledPosMarks)*(((bwtLength-1)>>BWTBLOCKSHIFT)+1) + sizeof(LCPIntervalTreeBlock)*((numLcpIntervals>>BLOCKSHIFT)+1) + sizeof(*extraLCPvalues)*numOversizedLCPs + sizeof(int)*(numBigTopLcps+numBigTopPlps+numBigTopSizes) );
-		printf(":: %d lcp-intervals (tree representation = %.1lf MB)\n",numLcpIntervals, ((double)k)/((double)1000000) );
+		sumValues = (long long int)( sizeof(SampledPosMarks)*(((bwtLength-1)>>BWTBLOCKSHIFT)+1) + sizeof(LCPIntervalTreeBlock)*((numLcpIntervals>>BLOCKSHIFT)+1) + sizeof(*extraLCPvalues)*numOversizedLCPs + sizeof(int)*(numBigTopLcps+numBigTopPlps+numBigTopSizes) );
+		printf(":: %u lcp-intervals (tree representation = %.1lf MB)\n",numLcpIntervals, ((double)sumValues)/((double)1000000) );
 		printf(":: %.2lf%% with at least one alphabet letter missing\n",((double)numIncompleteLcpIntervals/(double)numLcpIntervals)*100.0);
-		printf(":: %d shared top corners (avg count = %d , max count = %d)\n",numSharedTopCorners,(avgSharedTopCornersCount/numSharedTopCorners),maxSharedTopCornersCount);
+		printf(":: %u shared top corners (avg count = %u , max count = %u)\n",numSharedTopCorners,(avgSharedTopCornersCount/numSharedTopCorners),maxSharedTopCornersCount);
+		i = (((numLCPSamples-1)>>BLOCKSHIFT)+1);
+		k = (numOversizedLCPs+numOversizedPLPs);
+		printf(":: Number of oversized counters usage: 2singles = %luMB ; 1joint = %luMB (%u shared)\n", (2*i+k*1)*sizeof(unsigned int)/1000000U , (1*i+(k-numOversizedBothValues)*2)*sizeof(unsigned int)/1000000U , numOversizedBothValues );
 		#endif
 	}
 	#ifdef DEBUGLCP
@@ -1015,12 +1024,15 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 				progressCounter=0;
 			} else progressCounter++;
 		}
-		k=GetPrefixLinkFromLcpPos(lcppos);
-		if(k!=fullPLPArray[lcppos]) break;
+		i=GetPrefixLinkFromLcpPos(lcppos);
+		if(i!=fullPLPArray[lcppos]) break;
 	}
 	if(lcppos==numLCPSamples){ if(verbose) printf(" OK\n"); }
-	else printf("\n> ERROR: sampledPLP[%d:%d]=%d =!= fullPLP[%d]=%d\n",(lcppos>>BLOCKSHIFT),(lcppos&BLOCKMASK),k,lcppos,fullPLPArray[lcppos]);
+	else printf("\n> ERROR: sampledPLP[%u:%u]=%u =!= fullPLP[%u]=%u\n",(lcppos>>BLOCKSHIFT),(lcppos&BLOCKMASK),i,lcppos,fullPLPArray[lcppos]);
 	if(verbose){ printf("> Testing Single Parent Intervals "); fflush(stdout); }
+	testNumCalls=0;
+	testNumFollowedPos=0;
+	testMaxFollowedPos=0;
 	progressStep=(numLCPSamples/10);
 	progressCounter=0;
 	topptr=0; // prevent compiler warnings
@@ -1040,7 +1052,7 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 		stopptr=bwtpos;
 		sbottomptr=bwtpos;
 		i=GetEnclosingLCPInterval(&stopptr,&sbottomptr);
-		if(i!=k || stopptr!=topptr || sbottomptr!=bottomptr) break;
+		if((int)i!=k || stopptr!=topptr || sbottomptr!=bottomptr) break;
 		lcp=GetLcpValueFromLcpPos(lcppos);
 		topptr=bwtpos;
 		bottomptr=bwtpos;
@@ -1048,11 +1060,12 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 		stopptr=bwtpos;
 		sbottomptr=bwtpos;
 		i=GetEnclosingLCPIntervalFromLCPPos(lcppos,&stopptr,&sbottomptr);
-		if(i!=k || stopptr!=topptr || sbottomptr!=bottomptr) break;
+		if((int)i!=k || stopptr!=topptr || sbottomptr!=bottomptr) break;
 	}
 	if(lcppos==numLCPSamples){
 		if(verbose) printf(" OK\n");
 	} else printf("\n> ERROR: sampledNPSV[%u]=(%d){%u,%u} =!= fullNPSV[%u]=(%d){%u,%u}\n",bwtpos,i,stopptr,sbottomptr,bwtpos,k,topptr,bottomptr);
+	printf(":: Average followed SLCP positions for Parent query = %lld (max=%lld)\n",(testNumFollowedPos/testNumCalls),testMaxFollowedPos);
 	/*
 	if(verbose){ printf("> Testing Full Parent Intervals "); fflush(stdout); }
 	progressStep=(bwtLength/10);
@@ -1071,18 +1084,21 @@ int BuildSampledLCPArray(char *text, int textsize, unsigned char *lcparray, int 
 		sbottomptr=bwtpos;
 		topptr=bwtpos;
 		bottomptr=bwtpos;
-		i=INT_MAX;
-		while(i>0){
-			i=GetEnclosingLCPInterval(&stopptr,&sbottomptr);
-			k=GetTrueEnclosingLCPInterval(&topptr,&bottomptr);
-			if(i!=k || stopptr!=topptr || sbottomptr!=bottomptr) break;
+		k=INT_MAX;
+		while(k>0){
+			k=GetEnclosingLCPInterval(&stopptr,&sbottomptr);
+			i=GetTrueEnclosingLCPInterval(&topptr,&bottomptr);
+			if(k!=(int)i || stopptr!=topptr || sbottomptr!=bottomptr) break;
 		}
-		if(i!=k || stopptr!=topptr || sbottomptr!=bottomptr) break;
+		if(k!=(int)i || stopptr!=topptr || sbottomptr!=bottomptr) break;
 	}
 	if(bwtpos==(unsigned int)bwtLength){
 		if(verbose) printf(" OK\n");
-	} else printf("\n> ERROR: sampledNPSV[%u]=(%d){%u,%u} =!= fullNPSV[%u]=(%d){%u,%u}\n",bwtpos,i,stopptr,sbottomptr,bwtpos,k,topptr,bottomptr);
+	} else printf("\n> ERROR: sampledNPSV[%u]=(%d){%u,%u} =!= fullNPSV[%u]=(%d){%u,%u}\n",bwtpos,k,stopptr,sbottomptr,bwtpos,i,topptr,bottomptr);
 	*/
+	numParentCalls=0;
+	free(fullPLPArray);
+	free(fullLCPArray);
 	#endif
 	return numLCPSamples;
 }

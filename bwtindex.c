@@ -171,6 +171,13 @@ static unsigned char *letterIds = NULL;
 static unsigned int numBackSteps;
 #endif
 
+// variables and arrays needed to support a text composed of multiple strings
+static char **multiStringTexts;
+static char *multiStringLastChar;
+static unsigned int *multiStringFirstPos;
+static unsigned int multiStringPosShift;
+static unsigned int *multiStringIdInBlock;
+
 void InitializeIndexArrays(){
 	int i;
 	letterIds=(unsigned char *)malloc(256*sizeof(unsigned char));
@@ -222,6 +229,15 @@ void FMI_FreeIndex(){
 	if(letterIds!=NULL){
 		free(letterIds);
 		letterIds=NULL;
+	}
+	if(multiStringTexts!=NULL){
+		free(multiStringLastChar);
+		free(multiStringFirstPos);
+		free(multiStringIdInBlock);
+		multiStringLastChar=NULL;
+		multiStringFirstPos=NULL;
+		multiStringIdInBlock=NULL;
+		multiStringTexts=NULL;
 	}
 	/*
 	if(offsetMasks!=NULL){
@@ -327,7 +343,7 @@ __inline unsigned int FMI_LetterJump( unsigned int letterId , unsigned int bwtPo
 	bitArray &= ( (block->bwtBits[0]) ^ letterMasks[0] ); // keep only positions with the same 1st bit
 	bitArray &= ( (block->bwtBits[1]) ^ letterMasks[1] ); // keep only positions with the same 2nd bit
 	bitArray &= ( (block->bwtBits[2]) ^ letterMasks[2] ); // keep only positions with the same 3rd bit
-	letterJump = (block->letterJumpsSample[(letterId-1)]); // get last letter jump before this block (jumps fo '$' are not stored, so it is (letterId-1))
+	letterJump = (block->letterJumpsSample[(letterId-1)]); // get last letter jump before this block (jumps for '$' are not stored, so it is (letterId-1))
 	#ifdef __GNUC__
 		return ( letterJump + __builtin_popcount( bitArray ) );
 	#else
@@ -558,55 +574,104 @@ void FMI_SaveIndex(char *indexfilename){
 }
 */
 
-void PrintBWT(char *text, unsigned int *letterStartPos){
-	unsigned int i, n, p;
-	printf("%u {", bwtSize );
-	for( n = 1 ; n < ALPHABETSIZE ; n++ ){
-		printf(" %c [%02u-%02u] %c", LETTERCHARS[n] , letterStartPos[n] , (n==(ALPHABETSIZE-1))?(bwtSize-1):(letterStartPos[(n+1)]-1) , (n==(ALPHABETSIZE-1))?'}':',' );
-	}
-	printf(" 2^%u=%u %u %#.8X\n", SAMPLEINTERVALSHIFT , SAMPLEINTERVALSIZE , numSamples , SAMPLEINTERVALMASK );
-	printf("[ i] (SA) {");
-	for( n = 1 ; n < ALPHABETSIZE ; n++ ){
-		printf(" %c%c", LETTERCHARS[n] , (n==(ALPHABETSIZE-1))?'}':',' );
-	}
-	#ifdef BUILD_LCP
-	if( LCPArray != NULL ) printf(" LCP");
-	#endif
-	printf(" BWT\n");
-	for( i = 0 ; i < bwtSize ; i++ ){ // position in BWT
-		p = FMI_PositionInText( i );
-		printf("[%02u]%c(%2u) {", i , (i & SAMPLEINTERVALMASK)?' ':'*' , p );
-		for( n = 1 ; n < ALPHABETSIZE ; n++ ){
-			printf("%02u%c", FMI_LetterJump( n , i ) , (n==(ALPHABETSIZE-1))?'}':',' );
-		}
-		#ifdef BUILD_LCP
-		if( LCPArray != NULL ) printf(" %3d",(int)LCPArray[i]);
-		#endif
-		printf(" %c ", FMI_GetCharAtBWTPos(i) );
-		n = 0;
-		while( ( n < (ALPHABETSIZE-1) ) && ( i >= letterStartPos[(n+1)] ) ) n++;
-		printf(" %c ", LETTERCHARS[n] );
-		if( p != (bwtSize-1) ) p++; // char at the right of the BWT char
-		else p = 0;
-		if( text != NULL ) printf("%s", (char *)(text+p) );
-		printf("\n");
-	}
-}
 
 // Function pointer to get char id at corresponding text position
 unsigned int (*GetTextCharId)(unsigned int);
 
-// TODO: add code/functions for partial string text, circular text, packed binary text and multiple strings
+// TODO: add code/functions for circular tex and for packed binary text
+// NOTE: the last pos (pos=textSize) is '\0' which maps to the id of '$' through the letterIds lookup table
 unsigned int GetTextCharIdFromPlainText(unsigned int pos){
-	//if(pos==textSize) return (unsigned int)letterIds[(unsigned char)'$'];
 	return (unsigned int)letterIds[(unsigned char)text[pos]];
 }
 
-// TODO: implement as lookup table with entries corresponding to blocks of size floor(log2(smallest_sequence)) with seq_id + block_start_in_seq + seq_end_in_block for (seq_id+1) check
+// Creates a lookup table with entries corresponding to blocks of size floor(log2(smallest_sequence)) and containing the sequence id at the first pos of each block
+unsigned int InitializeMultiStringArrays(char **texts, unsigned int *textSizes, unsigned int numTexts){
+	unsigned int id, pos, blockSize, blockNum, globalStringSize;
+	multiStringTexts = texts;
+	multiStringLastChar = (char *)malloc(numTexts*sizeof(char)); // terminator chars for each string
+	multiStringFirstPos = (unsigned int *)malloc((numTexts+1)*sizeof(unsigned int)); // start pos in global string, plus one fake position after last one
+	blockSize = UINT_MAX; // size of shortest string
+	pos = 0; // position in global string
+	for (id = 0; id < numTexts; id++){
+		multiStringFirstPos[id] = pos;
+		multiStringLastChar[id] = 'N';
+		if (textSizes[id] < blockSize) blockSize = textSizes[id];
+		pos += (textSizes[id] + 1); // string size plus extra terminator char
+	}
+	multiStringLastChar[(numTexts-1)] = '$'; // terminator char for global string
+	multiStringFirstPos[numTexts] = pos; // fake next to last string
+	globalStringSize = pos;
+	multiStringPosShift = 1;
+	while ((1UL << (multiStringPosShift + 1)) < blockSize) multiStringPosShift++; // get highest power of two lower or equal to the minimum size
+	blockSize = (1UL << multiStringPosShift); // size of each block
+	blockNum = (((globalStringSize - 1) >> multiStringPosShift) + 1); // total number of blocks
+	multiStringIdInBlock = (unsigned int *)malloc(blockNum*sizeof(unsigned int)); // string id at the beginning of each block
+	id = 0;
+	pos = 0;
+	blockNum = 0;
+	while (pos <= (globalStringSize - 1)){ // fill the string id in all blocks
+		if (pos >= multiStringFirstPos[(id + 1)]) id++; // if the 1st pos of this block is at or after the 1st of the next string, set next string as current
+		multiStringIdInBlock[blockNum] = id;
+		pos += blockSize; // next block
+		blockNum++;
+	}
+	return globalStringSize;
+}
+
 // TODO: check implementation with binary search tree of shared and distinct bits of all numbers belonging to the same/different sequences
 unsigned int GetTextCharIdFromMultipleStrings(unsigned int pos){
-	return pos;
+	unsigned int id, lastPos;
+	id = multiStringIdInBlock[(pos >> multiStringPosShift)]; // string id at beginning of block containing this pos
+	lastPos = (multiStringFirstPos[id + 1] - 1); // last pos of this string
+	if (pos >= lastPos){
+		if (pos == lastPos) return (unsigned int)letterIds[(unsigned char)multiStringLastChar[id]]; // virtual last char of this string
+		id++; // the pos is on the next string
+	}
+	pos -= multiStringFirstPos[id]; // get pos inside string
+	return (unsigned int)letterIds[(unsigned char)(multiStringTexts[id][pos])];
 }
+
+
+void PrintBWT(unsigned int *letterStartPos){
+	unsigned int i, n, p;
+	printf("%u {", bwtSize);
+	for (n = 1; n < ALPHABETSIZE; n++){
+		printf(" %c [%02u-%02u] %c", LETTERCHARS[n], letterStartPos[n], (n == (ALPHABETSIZE - 1)) ? (bwtSize - 1) : (letterStartPos[(n + 1)] - 1), (n == (ALPHABETSIZE - 1)) ? '}' : ',');
+	}
+	printf(" 2^%u=%u %u %#.8X\n", SAMPLEINTERVALSHIFT, SAMPLEINTERVALSIZE, numSamples, SAMPLEINTERVALMASK);
+	printf("[ i] (SA) {");
+	for (n = 1; n < ALPHABETSIZE; n++){
+		printf(" %c%c", LETTERCHARS[n], (n == (ALPHABETSIZE - 1)) ? '}' : ',');
+	}
+#ifdef BUILD_LCP
+	if (LCPArray != NULL) printf(" LCP");
+#endif
+	printf(" BWT\n");
+	for (i = 0; i < bwtSize; i++){ // position in BWT
+		p = FMI_PositionInText(i);
+		printf("[%02u]%c(%2u) {", i, (i & SAMPLEINTERVALMASK) ? ' ' : '*', p);
+		for (n = 1; n < ALPHABETSIZE; n++){
+			printf("%02u%c", FMI_LetterJump(n, i), (n == (ALPHABETSIZE - 1)) ? '}' : ',');
+		}
+#ifdef BUILD_LCP
+		if (LCPArray != NULL) printf(" %3d", (int)LCPArray[i]);
+#endif
+		printf(" %c ", FMI_GetCharAtBWTPos(i));
+		n = 0;
+		while ((n < (ALPHABETSIZE - 1)) && (i >= letterStartPos[(n + 1)])) n++;
+		printf(" %c ", LETTERCHARS[n]);
+		if (p != (bwtSize - 1)) p++; // char at the right of the BWT char
+		else p = 0;
+		//if( text != NULL ) printf("%s", (char *)(text+p) );
+		while (p != bwtSize){
+			n = GetTextCharId(p);
+			printf(" %c ", LETTERCHARS[n]);
+			p++;
+		}
+		printf("\n");
+	}
+}
+
 
 typedef struct _LMSPos {
 	unsigned int pos;
@@ -1242,7 +1307,7 @@ void InducedSort( unsigned int *bucketSize , int *bucketStartPos , char verbose 
 //  - sort chars by number of occurrences (or just "$,N" the same, last 2 chars the most frequent ones)
 //  - variable length bits per char; process chars bottom up; depth-first while num chars in level is > 2; set chars bit to 0/1 at level
 //  - level_size=bwt_size; k=(alphabet_size-1); n=sorted_counts[k]; while(n<(level_size/2)) n+=sorted_counts[--k]; ...
-void FMI_BuildIndex(char *inputText, unsigned int inputTextSize, unsigned char **lcpArrayPointer, char verbose){
+void FMI_BuildIndex(char **inputTexts, unsigned int *inputTextSizes, unsigned int inputNumTexts, unsigned char **lcpArrayPointer, char verbose){
 	unsigned int letterId, i, n;
 	unsigned int textPos, samplePos;
 	unsigned int *letterCounts, *letterStartPos;
@@ -1302,10 +1367,17 @@ void FMI_BuildIndex(char *inputText, unsigned int inputTextSize, unsigned char *
 		fflush(stdout);
 	}
 	*/
-	text = inputText;
-	bwtSize = (inputTextSize+1); // count terminator char too
+	if (inputNumTexts == 1){ // only one text
+		text = inputTexts[0];
+		bwtSize = (inputTextSizes[0] + 1); // count terminator char too
+		GetTextCharId = GetTextCharIdFromPlainText; // set function pointer
+		multiStringTexts = NULL;
+	} else { // multiple texts
+		text = NULL;
+		bwtSize = InitializeMultiStringArrays(inputTexts, inputTextSizes, inputNumTexts);
+		GetTextCharId = GetTextCharIdFromMultipleStrings;
+	}
 	InitializeIndexArrays(); // initialize letter ids array
-	GetTextCharId = GetTextCharIdFromPlainText; // set function pointer
 	letterCounts = (unsigned int *)malloc(ALPHABETSIZE*sizeof(unsigned int));
 	letterLMSStartPos = (int *)malloc(ALPHABETSIZE*sizeof(int));
 
@@ -1453,7 +1525,7 @@ void FMI_BuildIndex(char *inputText, unsigned int inputTextSize, unsigned char *
 		fflush(stdout);	
 	}
 	#ifdef DEBUG_INDEX
-	if(bwtSize<100) PrintBWT(text,letterStartPos);
+	if(bwtSize<100) PrintBWT(letterStartPos);
 	if(verbose){
 		printf("> Checking BWT ");
 		#if ( defined(BUILD_LCP) && defined(UNBOUNDED_LCP) )

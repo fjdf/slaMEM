@@ -20,7 +20,7 @@
 
 void exitMessage(char *msg){
 	printf("> ERROR: %s\n",msg);
-	getchar();
+	//getchar();
 	exit(-1);
 }
 

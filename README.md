@@ -1,3 +1,5 @@
+# slaMEM
+
 *slaMEM* is a tool used to efficiently retrieve _MEMs_ (`Maximal Exact Matches`)
 between a reference sequence and one or more query sequences, similarly to
 these software tools:
@@ -6,26 +8,33 @@ these software tools:
 * [sparseMEM] (http://compbio.cs.princeton.edu/mems/)
 * [backwardMEM](http://www.uni-ulm.de/in/theo/research/seqana.html#c102393)
 
-*slaMEM* relies on an [FM-Index][1] coupled with a new data structure called
-*SSILCP* (`Sampled Search Intervals and Longest Common Prefixes`) to store
+*slaMEM* relies on an [FM-Index][1] together with a new data structure called
+*SSILCP* (`Sampled Search Intervals from Longest Common Prefixes`) to store
 information about _parent intervals_ in a space and time efficient way.
 
 *slaMEM* also includes an useful feature to display the locations of the found
 MEMs, generating images like the one below.
 
-![MEMs of 57 E.coli strains](https://github.com/fjdf/slaMEM/images/all-ecoli-strains-mems_small.jpg "E.coli MEMs")
+![MEMs of 57 E.coli strains](https://raw.github.com/fjdf/slaMEM/master/images/all-ecoli-strains-mems_small.jpg "E.coli MEMs")
 
-###### Install
-Just compile it with `make`.
+### Install
+Simply compile it with `make`.
 
-###### Usage
-Just run `./slaMEM` with no arguments for a list of options.
+### Usage
+The basic command line is:
+```
+./slaMEM <reference_file> <query_files>
+```
+For a full list of options run `./slaMEM` with no arguments.
 
-###### Reference
+### Reference
 To reference *slaMEM* please cite:
-> slaMEM: Efficient retrieval of Maximal Exact Matches using a Sampled LCP Array *(in review)*
+
+[Fernandes,F. and Freitas,A.T. (2013) slaMEM: Efficient retrieval of Maximal Exact Matches using a Sampled LCP Array. Bioinformatics.](http://dx.doi.org/10.1093/bioinformatics/btt706)
+
 
 [1]: http://dl.acm.org/citation.cfm?id=796543
+
 
 ---
 

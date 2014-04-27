@@ -14,9 +14,14 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 #include "sequence.h"
 
-char *charsTable = NULL;
+static FILE **seqFiles;
+static unsigned char numFiles = 0;
+static char *charsTable = NULL;
+static int numMergedSeqs = 0;
+static unsigned int *mergedSeqsStartPos = NULL;
 
 Sequence *AddNewSequence(){
 	Sequence *newSeq;
@@ -36,12 +41,21 @@ void DeleteAllSequences(){
 		if((seq->name)!=NULL) free(seq->name);
 		if((seq->chars)!=NULL) free(seq->chars);
 		//if((seq->sourcefilename)!=NULL) free(seq->sourcefilename);
-		if((seq->sourcefile)!=NULL) fclose(seq->sourcefile);
+		//if((seq->sourcefile)!=NULL) fclose(seq->sourcefile);
 		free(seq);
 	}
 	free(allSequences);
 	allSequences=NULL;
+	numSequences=0;
 	if(charsTable!=NULL) free(charsTable);
+	charsTable=NULL;
+	if(mergedSeqsStartPos!=NULL) free(mergedSeqsStartPos);
+	mergedSeqsStartPos=NULL;
+	numMergedSeqs=0;
+	for(i=0;i<numFiles;i++) fclose(seqFiles[i]);
+	if(seqFiles!=NULL) free(seqFiles);
+	seqFiles=NULL;
+	numFiles=0;
 }
 
 void InitCharsTable(int allowNs){
@@ -68,13 +82,24 @@ void InitCharsTable(int allowNs){
 
 // NOTE: returns the number of sequences inside the file
 // NOTE: numSequences must be set to 0 before the first invocation of this function
-int LoadSequencesFromFile(char *inputfilename, int loadchars, int acgtonly){
+// NOTE: merging multiple sequence in a global one (mergeseqs) is only available for the first file
+// NOTE: if mergeseqs is set, the string of all the concatenated sequences is stored in the entry of the 1st sequence
+int LoadSequencesFromFile(char *inputfilename, int loadchars, int mergeseqs, int acgtonly){
 	FILE *file;
 	char c, *seqchars;
-	int k,numseqs,desclen,seqlen,maxseqlen;
+	int k,numseqs,desclen;
+	unsigned int seqsize,seqlen,maxseqlen;
 	long int filestart,fileend,filesize;
 	fpos_t startpos;
 	Sequence *seq;
+	if(numFiles==UCHAR_MAX){
+		printf("> WARNING: Loading more than %d files is not supported\n",(int)UCHAR_MAX);
+		return 0;
+	}
+	if(mergeseqs && numSequences!=0){
+		printf("> WARNING: Merged sequences are only supported for the first loaded file\n");
+		return 0;
+	}
 	printf("> Loading sequences from file <%s> ... ",inputfilename);
 	if((file=fopen(inputfilename,"r"))==NULL){
 		printf("\n> WARNING: Sequence file not found\n");
@@ -88,14 +113,17 @@ int LoadSequencesFromFile(char *inputfilename, int loadchars, int acgtonly){
 	rewind(file);
 	printf("(%ld bytes)\n",filesize);
 	c=fgetc(file);
-	while(c!=EOF && c!='>') c=fgetc(file);
-	if(c==EOF){
-		printf("> WARNING: No sequences in file\n");
+	//while(c!=EOF && c!='>') c=fgetc(file);
+	if(c!='>'){
+		printf("> WARNING: Invalid FASTA file\n");
 		return 0;
 	}
 	InitCharsTable(!acgtonly);
 	numseqs=0; // number of sequences inside this file only
-	while(1){
+	seqlen=0;
+	maxseqlen=0;
+	seqchars=NULL;
+	while(1){ // loop for all sequences inside file
 		while(c!=EOF && c!='>') c=fgetc(file);
 		if(c==EOF) break;
 		fgetpos(file,&startpos); // save file position
@@ -108,55 +136,76 @@ int LoadSequencesFromFile(char *inputfilename, int loadchars, int acgtonly){
 		for(k=desclen;k<40;k++) putchar(' ');
 		printf("] ");
 		fflush(stdout);
-		seqchars=NULL;
-		seqlen=0;
-		if(loadchars){
+		seqsize=0; // size of the current single sequence only
+		if(!mergeseqs || numseqs==0){ // if merging sequences, do not reset these variables everytime, only the 1st time
+			seqlen=0; // stores the size of the concatenated global sequence
 			maxseqlen=0;
+			seqchars=NULL;
+		}
+		if(loadchars){
 			while((c=fgetc(file))!='>' && c!=EOF){
 				c=charsTable[(unsigned char)c]; // normalize char
 				if(c!=0){
 					if(seqlen==maxseqlen){
 						maxseqlen+=(1<<20); // allocate space in 1MB steps
 						seqchars=(char *)realloc(seqchars,maxseqlen*sizeof(char));
+						if(mergeseqs && numseqs!=0 && seqsize==0){ // when starting a new seq of the merged multi-seq string, separate seqs with an 'N' char
+							seqchars[seqlen++]='N'; // replace existing '\0' with an 'N'
+						}
 					}
-					seqchars[seqlen]=c;
-					seqlen++;
+					seqchars[seqlen++]=c;
+					seqsize++;
+					if(seqlen==UINT_MAX) break;
 				}
 			}
 			if(seqlen!=0){
+				maxseqlen=seqlen;
 				seqchars=(char *)realloc(seqchars,(seqlen+1)*sizeof(char)); // shorten allocated space to fit real seq size
 				seqchars[seqlen]='\0';
 			}
 		} else {
+			seqchars=NULL;
 			while((c=fgetc(file))!='>' && c!=EOF){
 				c=charsTable[(unsigned char)c];
-				if(c!=0) seqlen++;
+				if(c!=0){
+					seqsize++;
+					if(seqsize==UINT_MAX) break;
+				}
 			}
+			seqlen+=seqsize;
 		}
 		/*
 		while((c=fgetc(file))!=EOF && c!='>'){
 			if(c>='a' && c<='z') c-=32;
-			if(c>='A' && c<='Z') seqlen++;
+			if(c>='A' && c<='Z') seqsize++;
 		}
 		*/
-		if(seqlen==0){
+		if(seqsize==0){
 			printf("EMPTY\n");
 			continue;
 		}
-		printf("(%d bp) ",seqlen);
+		if(seqlen==UINT_MAX){
+			printf("\n> WARNING: Sequence lengths of more than %u bp are not supported\n",UINT_MAX);
+			return 0;
+		}
+		printf("(%u bp) ",seqsize);
 		fflush(stdout);
 		numseqs++;
 		seq=AddNewSequence(); // new sequence ; sets numSequences++
-		seq->size=seqlen;
+		seq->size=seqsize;
 		seq->order=numSequences;
 		seq->name=(char *)malloc((desclen+1)*sizeof(char));
 		fsetpos(file,&startpos); // restore file position
 		k=0;
 		while((c=fgetc(file))!=EOF && c!='\n' && c!='\r') (seq->name)[k++]=c;
 		(seq->name)[k]='\0';
+		fgetpos(file,&startpos);
+		seq->sourcefilepos=startpos;
+		seq->fileid=numFiles;
+		//seq->sourcefilename=inputfilename;
 		if(loadchars){
-			(seq->chars)=seqchars;
-			if(numseqs==1) loadchars=0; // only load chars for 1st seq inside file
+			if(!mergeseqs) seq->chars=seqchars;
+			else seq->chars=NULL;
 			/*
 			(seq->chars)=(char *)malloc((seqlen+1)*sizeof(char));
 			k=0;
@@ -170,8 +219,7 @@ int LoadSequencesFromFile(char *inputfilename, int loadchars, int acgtonly){
 			(seq->chars)[k]='\0';
 			*/
 		} else {
-			fgetpos(file,&startpos);
-			seq->sourcefilepos=startpos;
+			seq->chars=NULL;
 			/*
 			k=0;
 			while(inputfilename[k]!='\0') k++;
@@ -180,28 +228,43 @@ int LoadSequencesFromFile(char *inputfilename, int loadchars, int acgtonly){
 			while((c=inputfilename[k])!='\0') (seq->sourcefilename)[k++]=c;
 			(seq->sourcefilename)[k]='\0';
 			*/
-			seq->sourcefile=fopen(inputfilename,"r");
-			fsetpos(seq->sourcefile,&startpos);
+			//seq->sourcefile=fopen(inputfilename,"r");
+			//fsetpos(seq->sourcefile,&startpos);
 			while(c!=EOF && c!='>') c=fgetc(file);
 		}
 		printf("OK\n");
 		fflush(stdout);
 	}
-	fclose(file);
+	if(numseqs!=0){ // if seqs were present in the file
+		seqFiles=(FILE **)realloc(seqFiles,(numFiles+1)*sizeof(FILE *));
+		seqFiles[numFiles]=file;
+		numFiles++;
+		if(mergeseqs){ // only allowed for the first file
+			numMergedSeqs=numseqs;
+			mergedSeqsStartPos=(unsigned int *)malloc(numseqs*sizeof(unsigned int));
+			mergedSeqsStartPos[0]=0; // save starting positions of each sequence inside the global merged sequence
+			for(k=1;k<numMergedSeqs;k++) mergedSeqsStartPos[k]= ( mergedSeqsStartPos[(k-1)] + (allSequences[(k-1)]->size) + 1 );
+			allSequences[0]->size=seqlen; // save the merged global sequence as the first sequence
+			allSequences[0]->chars=seqchars;
+		}
+	} else { // no seqs inside this file
+		fclose(file);
+	}
 	return numseqs;
 }
 
 void LoadSequenceChars(Sequence *seq){
 	FILE *file;
-	int i, seqsize;
+	unsigned int i;
 	char c;
-	//if((seq->sourcefilename)==NULL) return;
+	if((seq->chars)!=NULL) return;
+	file=seqFiles[(seq->fileid)];
+	//if((seq->chars)!=NULL || (seq->sourcefilename)==NULL) return;
 	//if((file=fopen((seq->sourcefilename),"r"))==NULL) return;
-	if((seq->chars)!=NULL || (seq->sourcefile)==NULL) return;
-	seqsize=(seq->size);
-	(seq->chars)=(char *)malloc((seqsize+1)*sizeof(char));
-	file=(seq->sourcefile);
+	//if((seq->chars)!=NULL || (seq->sourcefile)==NULL) return;
+	//file=(seq->sourcefile);
 	fsetpos(file,&(seq->sourcefilepos));
+	(seq->chars)=(char *)malloc(((seq->size)+1)*sizeof(char));
 	/*
 	i=0;
 	while((c=fgetc(file))!=EOF && c!='>'){
@@ -218,11 +281,26 @@ void LoadSequenceChars(Sequence *seq){
 		if(c!=0) (seq->chars)[i++]=c;
 	}
 	(seq->chars)[i]='\0';
+	//fclose(file);
 }
 
 void FreeSequenceChars(Sequence *seq){
 	if((seq->chars)!=NULL) free(seq->chars);
 	seq->chars=NULL;
+}
+
+// Given a position in the global merged seq, returns the id of the corresponding partial seq and updates the pos inside the seq
+int GetSeqIdFromMergedSeqsPos(unsigned int *pos){
+	int leftseq, rightseq, middleseq;
+	leftseq=0;
+	rightseq=(numMergedSeqs-1);
+	while(leftseq!=rightseq){ // binary search
+		middleseq=(leftseq+rightseq+1)/2; // +1 for ceiling
+		if((*pos)>=mergedSeqsStartPos[middleseq]) leftseq=middleseq;
+		else rightseq=(middleseq-1); // pos < middle ; -1 so the pointers are placed to the left of the pos
+	}
+	(*pos)-=mergedSeqsStartPos[leftseq];
+	return leftseq;
 }
 
 int GetSeqIdFromSeqName(char *seqname){
@@ -257,24 +335,13 @@ int GetSeqIdFromSeqName(char *seqname){
 	return bests;
 }
 
+/*
 char GetNextChar(int seqid){
 	char c;
 	do {
 		c=charsTable[(unsigned char)fgetc(allSequences[seqid]->sourcefile)];
 	} while(c==0);
 	return c;
-	/*
-	FILE *file;
-	file=(allSequences[seqid]->sourcefile);
-	while((c=fgetc(file))!=EOF && c!='>'){
-		if(c>='a' && c<='z') c-=32;
-		if(c>='A' && c<='Z'){
-			if(c=='A' || c=='C' || c=='G' || c=='T') return c;
-			else return 'N';
-		}
-	}
-	return (char)EOF;
-	*/
 }
 
 int GetNextCharCode(int seqid){
@@ -300,10 +367,11 @@ char CharAt(int pos, int seqid){
 	seq=allSequences[seqid];
 	if((seq->rotation)!=0){
 		pos+=(seq->rotation);
-		if(pos>=(seq->size)) pos-=(seq->size);
+		if(pos>=(int)(seq->size)) pos-=(int)(seq->size);
 	}
 	return (seq->chars)[pos];
 }
+*/
 
 // TODO: use quicksort
 void SortSequences(int *seqsizes, int *sortedseqs, int numseqs){
