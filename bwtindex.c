@@ -295,6 +295,10 @@ __inline unsigned int GetCharIdAtBWTPos( unsigned int bwtpos ){
 	charid |= ( ( ( (block->bwtBits[1]) >> offset ) & FIRSTLETTERMASK ) << 1 ); // get 2nd bit
 	charid |= ( ( ( (block->bwtBits[2]) >> offset ) & FIRSTLETTERMASK ) << 2 ); // get 3rd bit
 	return charid;
+	/**/
+	// TODO: remove this!
+	mask = mask;
+	/**/
 }
 
 __inline char FMI_GetCharAtBWTPos( unsigned int bwtpos ){

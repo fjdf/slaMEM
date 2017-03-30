@@ -244,7 +244,7 @@ int MEMInfoSortFunction(const void *a, const void *b){
 void SortMEMsFile(char *memsFilename){
 	FILE *memsFile, *sortedMemsFile;
 	char c, *sortedMemsFilename, seqname[256];
-	int numMems, maxNumMems, numSeqs, refpos, querypos, memsize, formatNumFields;
+	int numMems, maxNumMems, numSeqs, refpos, querypos, memsize, formatNumFields, n;
 	MEMInfo *memsArray;
 	printf("> Sorting MEMs from <%s> ",memsFilename);
 	fflush(stdout);
@@ -314,7 +314,7 @@ void SortMEMsFile(char *memsFilename){
 			}
 			if(c==EOF) break;
 			numMems=0;
-			fscanf(memsFile," %255[^\n]\n",seqname);
+			n=fscanf(memsFile," %255[^\n]\n",seqname);
 			printf(":: '%s' ... ",seqname);
 			fflush(stdout);
 			numSeqs++;
@@ -324,9 +324,10 @@ void SortMEMsFile(char *memsFilename){
 			maxNumMems+=1024;
 			memsArray=(MEMInfo *)realloc(memsArray,(maxNumMems*sizeof(MEMInfo)));
 		}
-		if(formatNumFields==4) fscanf(memsFile," %64[^\t ]",(memsArray[numMems].refName));
+		if(formatNumFields==4) n=fscanf(memsFile," %64[^\t ]",(memsArray[numMems].refName));
 		else memsArray[numMems].refName[0]='\0';
-		if((fscanf(memsFile," %d %d %d ",&refpos,&querypos,&memsize))!=3){
+		n=fscanf(memsFile," %d %d %d ",&refpos,&querypos,&memsize);
+		if(n!=3){
 			printf("\n> ERROR: Invalid format\n");
 			getchar();
 			exit(-1);
@@ -397,7 +398,7 @@ void CreateMemMapImage(char *refFilename, char *queryFilename, char *memsFilenam
 			}
 			if(c==EOF) break;
 			numMems=0;
-			fscanf(memsFile," %255[^\n]\n",seqname);
+			k=fscanf(memsFile," %255[^\n]\n",seqname);
 			printf(":: '%s' ... ",seqname);
 			fflush(stdout);
 			i=0; // check if seq name ends with string "Reverse"
@@ -415,7 +416,8 @@ void CreateMemMapImage(char *refFilename, char *queryFilename, char *memsFilenam
 			}
 			continue;
 		} else ungetc(c,memsFile);
-		if((fscanf(memsFile," %d %d %d ",&refPos,&queryPos,&memSize))!=3){
+		k=fscanf(memsFile," %d %d %d ",&refPos,&queryPos,&memSize);
+		if(k!=3){
 			printf("\n> ERROR: Invalid MEM format\n");
 			exit(-1);
 		}

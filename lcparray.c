@@ -574,10 +574,6 @@ int BuildSampledLCPArray(char *text, unsigned int textsize, unsigned char *lcpar
 	unsigned char bwtCharMask;
 	unsigned int numOversizedBothValues;
 	#endif
-	// TODO: remove this!
-	/**/
-	minlcp=0;
-	/**/
 	offsetMasks64bits = (unsigned long long int *)malloc(64*sizeof(unsigned long long int));
 	mask = 1ULL;
 	for(i=0;i<64;i++){
@@ -1101,4 +1097,8 @@ int BuildSampledLCPArray(char *text, unsigned int textsize, unsigned char *lcpar
 	free(fullLCPArray);
 	#endif
 	return numLCPSamples;
+	/**/
+	// TODO: remove this!
+	minlcp = minlcp;
+	/**/
 }
