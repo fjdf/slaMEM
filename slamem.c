@@ -20,7 +20,7 @@
 #include "lcparray.h"
 #include "graphics.h"
 
-#define VERSION "0.8"
+#define VERSION "0.8.1"
 
 //#define BENCHMARK 1
 #if defined(unix) && defined(BENCHMARK)
@@ -409,7 +409,7 @@ void CreateMemMapImage(char *refFilename, char *queryFilename, char *memsFilenam
 				strand=0;
 				numSeqs++;
 				if(numSeqs==numSequences){
-					printf("\n> ERROR: MEMs file not generated from this query file\n");
+					printf("\n> ERROR: MEMs file not generated from this query file (too many sequences)\n");
 					exit(-1);
 				}
 			}
@@ -513,6 +513,12 @@ void CleanFasta(char *fastafilename){
 	#endif
 	exit(0);
 }
+
+// TODO: add option "-r" to load one single file (or more) and select reference name ("set as reference the sequence containing this string") (create function to move seq to 0-th position of seqs array, load its chars and re-order the remaining seqs)
+// TODO: enable option "-v" on normal mode to create image automatically after finding MEMs (directly draw each block inside MEMs finding function) (or if "-v" set, call function to check if any of the input files is a mems file, set new var "memsFile", and pass it to image function)
+// TODO: draw gene annotations in image if GFF present (first detect type of all input files, set "memsFile"/"gffFile" variables, add all Fastas to a new array and use it as arg to loadSequences function)
+// TODO: if multiple refs exist draw all refs names bellow ref image, one name per row, and vertical lines on each split point extending to corresponding row (box around names or horizontal line above names right extended to the max of name length or split point; grey line when overlapping)
+// TODO: remove "baseBwtPos" field from SLCP structure to save memory and benchmark new running times
 
 // TODO: output MUMs (only once in query) and Multi-MEMS (same number in ref and all queries)
 int main(int argc, char *argv[]){

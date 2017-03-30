@@ -578,7 +578,7 @@ void FMI_SaveIndex(char *indexfilename){
 // Function pointer to get char id at corresponding text position
 unsigned int (*GetTextCharId)(unsigned int);
 
-// TODO: add code/functions for circular tex and for packed binary text
+// TODO: add code/functions for circular text and for packed binary text
 // NOTE: the last pos (pos=textSize) is '\0' which maps to the id of '$' through the letterIds lookup table
 unsigned int GetTextCharIdFromPlainText(unsigned int pos){
 	return (unsigned int)letterIds[(unsigned char)text[pos]];
@@ -743,7 +743,11 @@ void GetLMSs( unsigned int *charsCounts , int *charsFirstPos , char verbose ){
 			if( type == 'S' ){ // if last char was S-type and this one is L-type, last one was S*-type
 				if( numLMS == arrayMaxSize ){
 					arrayMaxSize += arrayGrowSize;
-					LMSArray = (LMSPos *)realloc(LMSArray,arrayMaxSize*sizeof(LMSPos));
+					LMSArray = (LMSPos *)realloc(LMSArray,((size_t)arrayMaxSize)*sizeof(LMSPos));
+					if( LMSArray == NULL ){
+						printf("\n> ERROR: Failed to allocate %lld MB of memory\n",(((long long int)arrayMaxSize)*sizeof(LMSPos))/1000000LL);
+						exit(-1);
+					}
 				}
 				LMSArray[numLMS].pos = (n+1); // the previous position (to the right) is an S*-type char
 				if( charsFirstPos[j] != (-1) ) LMSArray[ charsLastPos[j] ].next = numLMS; // add to linked list of this char id
