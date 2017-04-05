@@ -358,6 +358,7 @@ void FinalizeRefAlignmentImage(char **seqnames, char *imagefilename){
 	for(i=1;i<num_seqs;i++){
 		n=CharsCount(seqnames[i]);
 		m=(seqs_width[i]-2*CHAR_WIDTH)/(CHAR_WIDTH+CHAR_SPACE); // max chars to print inside seq box
+		if(m<0) m=0;
 		if(n>m) n=m;
 		DrawFilledRectangle((h_margin+CHAR_WIDTH-1),(seqs_start_y[i]+(seqs_height/2)-(CHAR_HEIGHT/2)-1),(n*(CHAR_WIDTH+CHAR_SPACE)-CHAR_SPACE+2),(CHAR_HEIGHT+2),color_white);
 		DrawString(seqnames[i],n,(h_margin+CHAR_WIDTH),(seqs_start_y[i]+(seqs_height/2)-(CHAR_HEIGHT/2)),color_black);

@@ -84,7 +84,7 @@ void InitCharsTable(int allowNs){
 // NOTE: numSequences must be set to 0 before the first invocation of this function
 // NOTE: merging multiple sequence in a global one (mergeseqs) is only available for the first file
 // NOTE: if mergeseqs is set, the string of all the concatenated sequences is stored in the entry of the 1st sequence
-int LoadSequencesFromFile(char *inputfilename, int loadchars, int mergeseqs, int acgtonly){
+int LoadSequencesFromFile(char *inputfilename, int loadchars, int mergeseqs, int acgtonly, unsigned int minlength){
 	FILE *file;
 	char c, *seqchars;
 	int k,numseqs,desclen;
@@ -182,6 +182,10 @@ int LoadSequencesFromFile(char *inputfilename, int loadchars, int mergeseqs, int
 		*/
 		if(seqsize==0){
 			printf("EMPTY\n");
+			continue;
+		}
+		if ((minlength!=0) && (seqsize<minlength)) {
+			printf("(%u bp) TOO SHORT\n",seqsize);
 			continue;
 		}
 		if(seqlen==UINT_MAX){

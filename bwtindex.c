@@ -348,7 +348,7 @@ __inline unsigned int FMI_LetterJump( unsigned int letterId , unsigned int bwtPo
 	bitArray &= ( (block->bwtBits[1]) ^ letterMasks[1] ); // keep only positions with the same 2nd bit
 	bitArray &= ( (block->bwtBits[2]) ^ letterMasks[2] ); // keep only positions with the same 3rd bit
 	letterJump = (block->letterJumpsSample[(letterId-1)]); // get last letter jump before this block (jumps for '$' are not stored, so it is (letterId-1))
-	#ifdef __GNUC__
+	#if defined(__GNUC__) && defined(__SSE4_2__)
 		return ( letterJump + __builtin_popcount( bitArray ) );
 	#else
 		return ( letterJump + BitsSetCount( bitArray ) );
@@ -377,7 +377,7 @@ unsigned int FMI_FollowLetter( char c , unsigned int *topPointer , unsigned int 
 	bitArray &= ( (block->bwtBits[1]) ^ letterMasks[1] );
 	bitArray &= ( (block->bwtBits[2]) ^ letterMasks[2] );
 	(*topPointer) = (block->letterJumpsSample[(letterId-1)]);
-	#ifdef __GNUC__
+	#if defined(__GNUC__) && defined(__SSE4_2__)
 		(*topPointer) += __builtin_popcount( bitArray );
 	#else
 		(*topPointer) += BitsSetCount( bitArray );
@@ -390,7 +390,7 @@ unsigned int FMI_FollowLetter( char c , unsigned int *topPointer , unsigned int 
 	bitArray &= ( (block->bwtBits[1]) ^ letterMasks[1] );
 	bitArray &= ( (block->bwtBits[2]) ^ letterMasks[2] );
 	(*bottomPointer) = (block->letterJumpsSample[(letterId-1)]);
-	#ifdef __GNUC__
+	#if defined(__GNUC__) && defined(__SSE4_2__)
 		(*bottomPointer) += __builtin_popcount( bitArray );
 	#else
 		(*bottomPointer) += BitsSetCount( bitArray );

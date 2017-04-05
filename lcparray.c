@@ -94,13 +94,13 @@ long long int testMaxFollowedPos = 0;
 #endif
 
 static unsigned long long int *offsetMasks64bits;
-#ifndef __GNUC__
+#if !( defined(__GNUC__) && defined(__SSE4_2__) )
 static int *perByteCounts;
 #endif
 
 void FreeSampledSuffixArray(){
 	free(offsetMasks64bits);
-	#ifndef __GNUC__
+	#if !( defined(__GNUC__) && defined(__SSE4_2__) )
 	free(perByteCounts);
 	#endif
 	free(bwtMarkedPositions);
@@ -138,7 +138,7 @@ unsigned int GetLcpPosFromBwtPos(unsigned int pos){
 	bitsArray = ( ( bitsArray * 0x0101010101010101 ) >> 56 );
 	return ( pos + (int)bitsArray );
 	*/
-	#ifdef __GNUC__
+	#if defined(__GNUC__) && defined(__SSE4_2__)
 		return ( pos + __builtin_popcountll( bitsArray ) );
 	#else
 		pos += perByteCounts[ ( bitsArray & 0x00000000000000FF ) >> 0 ];
@@ -543,7 +543,7 @@ int CompareUnsignedIntPair(const void *a, const void * b){
 int BuildSampledLCPArray(char *text, unsigned int textsize, unsigned char *lcparray, int minlcp, int verbose){
 	unsigned int textpos, prevtextpos;
 	char *topstring, *bottomstring;
-	#ifndef __GNUC__
+	#if !( defined(__GNUC__) && defined(__SSE4_2__) )
 	unsigned char byte;
 	#endif
 	unsigned int bwtpos, lcppos, i;
@@ -581,7 +581,7 @@ int BuildSampledLCPArray(char *text, unsigned int textsize, unsigned char *lcpar
 		mask <<= 1;
 		mask |= 1ULL;
 	}
-	#ifndef __GNUC__
+	#if !( defined(__GNUC__) && defined(__SSE4_2__) )
 	perByteCounts = (int *)malloc(256*sizeof(int));
 	for(i=0;i<256;i++){
 		k = 0;
