@@ -20,7 +20,6 @@ MEMs, generating images like the one below.
 
 ### Reference
 If you use *slaMEM*, please cite:
-
 [Fernandes, Francisco and Ana T. Freitas. **slaMEM: efficient retrieval of maximal exact matches using a sampled LCP array**. Bioinformatics 30.4 (2014): 464-471.](http://dx.doi.org/10.1093/bioinformatics/btt706)
 
 [1]: https://en.wikipedia.org/wiki/FM-index
