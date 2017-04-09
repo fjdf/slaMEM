@@ -1,7 +1,7 @@
 CC        = gcc
 EXEC      = slaMEM
 CFLAGS    = -Wall -Wextra -Wunused -mpopcnt
-CDEBUG    = -g -ggdb
+CDEBUG    = -g -ggdb -fno-inline -dH -DGDB
 COPTIMIZE = -Wuninitialized -O9 -fomit-frame-pointer
 CLIBS     = -lm
 
@@ -16,6 +16,9 @@ CPUARCH	:= $(shell uname -m)
 
 ifeq ($(MAKECMDGOALS),debug)
 	CFLAGS += $(CDEBUG)
+	EXEC   := $(addsuffix -debug, $(EXEC))
+else ifeq ($(MAKECMDGOALS),pack)
+	EXEC   := $(addsuffix -v$(VERSION), $(EXEC))
 else
 	CFLAGS += $(COPTIMIZE)
 endif
@@ -33,7 +36,7 @@ bin:
 
 clean:
 	@echo :: Cleaning up ...
-	@rm -f $(EXEC) $(EXEC).tar.gz
+	@rm -f $(EXEC) $(EXEC)-debug $(EXEC)-v$(VERSION).tar.gz
 
 pack:
 	@echo :: Packing files ...

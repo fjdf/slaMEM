@@ -14,7 +14,7 @@ typedef struct Sequence {
 int numSequences;
 Sequence **allSequences;
 
-int LoadSequencesFromFile(char *inputfilename, int loadchars, int mergeseqs, int acgtonly, unsigned int minlength);
+int LoadSequencesFromFile(char *inputfilename, int loadchars, int mergeseqs, int acgtonly, unsigned int minlength, char *seqnamestring);
 void DeleteAllSequences();
 void LoadSequenceChars(Sequence *seq);
 void FreeSequenceChars(Sequence *seq);

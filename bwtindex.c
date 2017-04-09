@@ -268,7 +268,7 @@ char *FMI_GetTextFilename(){
 	return textFilename;
 }
 
-__inline void SetCharAtBWTPos( unsigned int bwtpos , unsigned int charid ){
+static __inline void SetCharAtBWTPos( unsigned int bwtpos , unsigned int charid ){
 	unsigned int sample = ( bwtpos >> SAMPLEINTERVALSHIFT );
 	IndexBlock *block = &(Index[sample]); // get sample block
 	unsigned int offset = ( bwtpos & SAMPLEINTERVALMASK );
@@ -284,7 +284,7 @@ __inline void SetCharAtBWTPos( unsigned int bwtpos , unsigned int charid ){
 }
 
 // TODO: check if creating masks on-the-fly is faster than fetching them from array
-__inline unsigned int GetCharIdAtBWTPos( unsigned int bwtpos ){
+static __inline unsigned int GetCharIdAtBWTPos( unsigned int bwtpos ){
 	unsigned int sample, offset, mask, charid;
 	IndexBlock *block;
 	sample = ( bwtpos >> SAMPLEINTERVALSHIFT );
@@ -337,7 +337,7 @@ __inline unsigned int BitsSetCount( unsigned int bitArray ){
 
 // NOTE: if letterId is not at position bwtPos, it considers the jump of the previous occurence behind/above
 // NOTE: it assumes we will never try to do a letter jump by the terminator symbol, since there are no jumps stored in the index for it
-__inline unsigned int FMI_LetterJump( unsigned int letterId , unsigned int bwtPos ){
+static __inline unsigned int FMI_LetterJump( unsigned int letterId , unsigned int bwtPos ){
 	unsigned int offset, bitArray, letterJump, *letterMasks;
 	IndexBlock *block;
 	letterMasks = (unsigned int *)(inverseLetterBitMasks[letterId]);

@@ -80,14 +80,16 @@ void InitCharsTable(int allowNs){
 	charsTable[(unsigned char)EOF]=(char)EOF;
 }
 
-// NOTE: returns the number of sequences inside the file
+// TODO: allow "mergeseqs" to be used in all files, not only the 1st one (add "mergedSeqs" vars to Sequence struct)
+// NOTE: returns the number of valid sequences inside the file
 // NOTE: numSequences must be set to 0 before the first invocation of this function
 // NOTE: merging multiple sequence in a global one (mergeseqs) is only available for the first file
 // NOTE: if mergeseqs is set, the string of all the concatenated sequences is stored in the entry of the 1st sequence
-int LoadSequencesFromFile(char *inputfilename, int loadchars, int mergeseqs, int acgtonly, unsigned int minlength){
+// NOTE: if seqnamestring is not NULL, only the sequences whose name constains that string (case-sensitive) are loaded
+int LoadSequencesFromFile(char *inputfilename, int loadchars, int mergeseqs, int acgtonly, unsigned int minlength, char *seqnamestring){
 	FILE *file;
 	char c, *seqchars;
-	int k,numseqs,desclen;
+	int k,numseqs,desclen,matchpos;
 	unsigned int seqsize,seqlen,maxseqlen;
 	long int filestart,fileend,filesize;
 	fpos_t startpos;
@@ -128,14 +130,23 @@ int LoadSequencesFromFile(char *inputfilename, int loadchars, int mergeseqs, int
 		if(c==EOF) break;
 		fgetpos(file,&startpos); // save file position
 		printf("# %02d [",(numSequences+1));
+		matchpos=0;
 		desclen=0;
 		while((c=fgetc(file))!=EOF && c!='\n' && c!='\r'){
-			if(desclen<40) putchar(c);
+			if(desclen<50) putchar(c);
+			if((seqnamestring!=NULL) && (seqnamestring[matchpos]!='\0')){ // check if sequence name contains string
+				if(seqnamestring[matchpos]==c) matchpos++;
+				else matchpos=0;
+			}
 			desclen++;
 		}
-		for(k=desclen;k<40;k++) putchar(' ');
+		for(k=desclen;k<50;k++) putchar(' ');
 		printf("] ");
 		fflush(stdout);
+		if((seqnamestring!=NULL) && (seqnamestring[matchpos]!='\0')){
+			printf("NAME DOES NOT MATCH\n");
+			continue;
+		}
 		seqsize=0; // size of the current single sequence only
 		if(!mergeseqs || numseqs==0){ // if merging sequences, do not reset these variables everytime, only the 1st time
 			seqlen=0; // stores the size of the concatenated global sequence
@@ -186,6 +197,7 @@ int LoadSequencesFromFile(char *inputfilename, int loadchars, int mergeseqs, int
 		}
 		if ((minlength!=0) && (seqsize<minlength)) {
 			printf("(%u bp) TOO SHORT\n",seqsize);
+			seqlen-=seqsize;
 			continue;
 		}
 		if(seqlen==UINT_MAX){

@@ -20,7 +20,7 @@
 #include "lcparray.h"
 #include "graphics.h"
 
-#define VERSION "0.8.1"
+#define VERSION "0.8.2"
 
 //#define BENCHMARK 1
 #if defined(unix) && defined(BENCHMARK)
@@ -53,7 +53,7 @@ void GetMatches(int numRefs, int numSeqs, int matchType, int minMatchSize, int b
 	char command[32];
 	int commretval;
 	#endif
-	printf("> Using options: minimum M%cM length = %d\n",MATCH_TYPE_CHAR[matchType],minMatchSize);
+	printf("> Using options: minimum M%cM length = %d ; strand = %s\n", MATCH_TYPE_CHAR[matchType], minMatchSize,(bothStrands==0)?"forward only":"forward + reverse");
 	matchesOutputFile=fopen(outFilename,"w");
 	if(matchesOutputFile==NULL){
 		printf("\n> ERROR: Cannot create output file <%s>\n",outFilename);
@@ -350,23 +350,18 @@ void SortMEMsFile(char *memsFilename){
 	exit(0);
 }
 
-void CreateMemMapImage(char *refFilename, char *queryFilename, char *memsFilename, int minSeqLen){
+// TODO: when supporting multiple references, also support MEMs file in proper format (4 fields per line, starting with ref name)
+void CreateMemMapImage(char *memsFilename){
 	FILE *memsFile;
 	char c, seqname[256], **seqsNames, *imageFilename;
 	int i, numSeqs, *seqsSizes, numMems, refPos, queryPos, memSize, strand, k;
-	numSequences=0;
-	numSeqs=LoadSequencesFromFile(refFilename,0,0,0,(unsigned int)minSeqLen);
-	if(numSeqs==0){
-		printf("\n> ERROR: Reference sequence not found\n");
-		exit(-1);
+	numSeqs=1;
+	for(i=1;i<numSequences;i++){ // count number of references (seqs inside ref file)
+		if((allSequences[i]->fileid)==(allSequences[0]->fileid)) numSeqs++;
 	}
 	if(numSeqs>1){
-		printf("\n> ERROR: Support for visualizing multiple reference sequences will be added later but is not available yet\n");
-		exit(-1);
-	}
-	numSeqs=LoadSequencesFromFile(queryFilename,0,0,0,(unsigned int)minSeqLen);
-	if(numSeqs==0){
-		printf("\n> ERROR: No query sequences found\n");
+		printf("\n> ERROR: Support for visualizing multiple reference sequences is not implemented yet.\n");
+		printf("\tIf you require this feature, please request it to the author.\n");
 		exit(-1);
 	}
 	printf("> Processing MEMs from <%s> ...\n",memsFilename);
@@ -448,6 +443,7 @@ void CreateMemMapImage(char *refFilename, char *queryFilename, char *memsFilenam
 	free(imageFilename);
 	free(seqsSizes);
 	free(seqsNames);
+	DeleteAllSequences();
 	printf("> Done!\n");
 	#ifdef PAUSE_AT_EXIT
 	getchar();
@@ -524,16 +520,15 @@ void CleanFasta(char *fastafilename){
 	exit(0);
 }
 
-// TODO: in function "CreateMemMapImage", remove sequence loading code, and load the sequences in "main" before calling the function
-// TODO: add option "-r" to load one single file (or more) and select reference name ("set as reference the sequence containing this string") (create function to move seq to 0-th position of seqs array, load its chars and re-order the remaining seqs)
+// TODO: if multiple refs exist draw all refs names bellow ref image, one name per row, and vertical lines on each split point extending to corresponding row (box around names or horizontal line above names right extended to the max of name length or split point; grey line when overlapping)
 // TODO: enable option "-v" on normal mode to create image automatically after finding MEMs (directly draw each block inside MEMs finding function) (or if "-v" set, call function to check if any of the input files is a mems file, set new var "memsFile", and pass it to image function)
 // TODO: draw gene annotations in image if GFF present (first detect type of all input files, set "memsFile"/"gffFile" variables, add all Fastas to a new array and use it as arg to loadSequences function)
-// TODO: if multiple refs exist draw all refs names bellow ref image, one name per row, and vertical lines on each split point extending to corresponding row (box around names or horizontal line above names right extended to the max of name length or split point; grey line when overlapping)
 // TODO: remove "baseBwtPos" field from SLCP structure to save memory and benchmark new running times
 // TODO: output MUMs (only once in query) and Multi-MEMS (same number in ref and all queries)
 int main(int argc, char *argv[]){
-	int i, n, numFiles, numSeqsInFirstFile, refFileArgNum, argMatchType, argBothStrands, argNoNs, argMinMemSize, argMinSeqLen;
-	char *outFilename;
+	int i, j, n, numFiles, numSeqsInFirstFile, refFileArgNum, memsFileArgNum, refNameSearchArgNum;
+	int argMatchType, argBothStrands, argNoNs, argMinMemSize, argMinSeqLen;
+	char *outFilename, *isArgFastaFile, *refNameSearch, optionChar;
 	printf("[ slaMEM v%s ]\n\n",VERSION);
 	if(argc<3){
 		printf("Usage:\n");
@@ -544,16 +539,17 @@ int main(int argc, char *argv[]){
 		//printf("\t-mum\tfind MUMs: unique both in ref and query\n");
 		printf("\t-l\tminimum match length (default=20)\n");
 		printf("\t-o\toutput file name (default=\"*-mems.txt\")\n");
-		printf("\t-b\tprocess both strands\n");
-		printf("\t-n\tdiscard 'N's\n");
+		printf("\t-b\tprocess both forward and reverse strands\n");
+		printf("\t-n\tdiscard 'N' characters in the sequences\n");
 		printf("\t-m\tminimum sequence size (e.g. to ignore small scaffolds)\n");
+		printf("\t-r\tload only the reference(s) whose name(s) contain(s) this string\n");
 		printf("Extra:\n");
-		printf("\t-v\tgenerate MEMs map image\n");
+		printf("\t-v\tgenerate MEMs map image from this MEMs file\n");
 		//printf("\t-s\tsort MEMs file\n");
 		//printf("\t-c\tclean FASTA file\n");
 		printf("Example:\n");
-		printf("\t%s -b -l 10 ref.fna query.fna\n", argv[0]);
-		printf("\t%s -v ref.fna query.fna ref-mems.txt\n", argv[0]);
+		printf("\t%s -b -l 10 ./ref.fna ./query.fna\n",argv[0]);
+		printf("\t%s -v ./ref-mems.txt ./ref.fna ./query.fna\n",argv[0]);
 		return (-1);
 	}
 	if( ParseArgument(argc,argv,"S",0) ){ // Sort MEMs
@@ -572,44 +568,93 @@ int main(int argc, char *argv[]){
 		CleanFasta(argv[2]);
 		return 0;
 	}
-	if( ParseArgument(argc,argv,"V",0) ){ // Create MEMs image
-		if(argc<5){
-			printf("Usage: %s -v <reference_file> <query_file> <mems_file>\n\n",argv[0]);
-			return (-1);
+	n=0;
+	isArgFastaFile=(char *)calloc(argc,sizeof(char));
+	numFiles=0;
+	for(i=1;i<argc;i++){
+		if(argv[i][0]=='-'){ // skip arguments for options
+			optionChar=argv[i][1];
+			if(optionChar>='A' && optionChar<='Z') optionChar=(char)('a' + (optionChar - 'A'));
+			if(optionChar=='l' || optionChar=='o' || optionChar=='m' || optionChar=='v') i++; // skip value of option "-l", "-o", "-s", "-v"
+			else if(optionChar=='r'){ // skip reference name string (can span through multiple args)
+				i++;
+				if(i==argc) break;
+				j=0;
+				optionChar=argv[i][0];
+				if(optionChar=='\'' || optionChar=='\"') j=1; // string can be enclosed in quotes
+				else optionChar='\0';
+				n=0;
+				while(argv[i][j]!=optionChar){ // count chars of string
+					if(argv[i][j]=='\0'){
+						i++; // go to next argument
+						if(i==argc) break;
+						j=0;
+					} else j++;
+					n++;
+				}
+			}
+			continue;
 		}
-		argMinSeqLen=ParseArgument(argc,argv,"M",1);
-		if(argMinSeqLen==(-1)) argMinSeqLen=0;
-		CreateMemMapImage(argv[2],argv[3],argv[4],argMinSeqLen);
-		return 0;
+		isArgFastaFile[i]=1;
+		numFiles++;
 	}
-	argMatchType=0; // MEMs mode
-	if( ParseArgument(argc,argv,"MA",0) ) argMatchType=1; // MAMs mode
+	if(numFiles<2) exitMessage("Not enough input sequence files provided");
 	argNoNs=ParseArgument(argc,argv,"N",0);
 	argMinSeqLen=ParseArgument(argc,argv,"M",1);
 	if(argMinSeqLen==(-1)) argMinSeqLen=0;
+	refNameSearchArgNum=ParseArgument(argc,argv,"R",2);
+	if(refNameSearchArgNum==(-1)) refNameSearch=NULL;
+	else { // get reference name string
+		if(n==0) exitMessage("No reference name string provided");
+		refNameSearch=(char *)calloc((n+1),sizeof(char));
+		i=refNameSearchArgNum;
+		j=0;
+		optionChar=argv[i][0];
+		if(optionChar=='\'' || optionChar=='\"') j=1;
+		else optionChar='\0';
+		n=0;
+		while(argv[i][j]!=optionChar){
+			if(argv[i][j]=='\0'){
+				i++;
+				if(i==argc) break;
+				j=0;
+				refNameSearch[n]=' ';
+			} else{
+				refNameSearch[n]=argv[i][j];
+				j++;
+			}
+			n++;
+		}
+		refNameSearch[n]='\0';
+	}
+	memsFileArgNum=ParseArgument(argc,argv,"V",2);
 	refFileArgNum=(-1);
 	numSeqsInFirstFile=0;
 	numFiles=0;
 	numSequences=0; // initialize global variable needed by sequence functions
 	for(i=1;i<argc;i++){
-		if(argv[i][0]=='-'){ // skip arguments for options
-			if(argv[i][1]=='L' || argv[i][1]=='l') i++; // skip value of option "-l"
-			if(argv[i][1]=='O' || argv[i][1]=='o') i++; // skip value of option "-o"
-			if(argv[i][1]=='M' || argv[i][1]=='m') i++; // skip value of option "-s"
-			continue;
-		}
-		n=LoadSequencesFromFile(argv[i],((numFiles==0)?1:0),((numFiles==0)?1:0),argNoNs,(unsigned int)argMinSeqLen);
+		if(!isArgFastaFile[i]) continue; // skip options and their arguments
+		n=LoadSequencesFromFile(argv[i],((numFiles==0 && memsFileArgNum==(-1))?1:0),((numFiles==0)?1:0),argNoNs,(unsigned int)argMinSeqLen,(numFiles==0)?refNameSearch:NULL);
 		if(n!=0) numFiles++;
+		if(numFiles==0) exitMessage("No valid sequences found in reference file");
 		if(numFiles==1){ // reference file
 			refFileArgNum=i;
 			numSeqsInFirstFile=n;
 		}
 	}
-	if(numFiles==0) exitMessage("No reference or query files provided");
+	free(isArgFastaFile);
+	if(refNameSearch!=NULL) free(refNameSearch);
+	//if(numFiles==0) exitMessage("No reference or query files provided");
 	if(numFiles==1) exitMessage("No query files provided");
 	n=(numSequences-numSeqsInFirstFile);
 	if(n==0) exitMessage("No valid query sequences found");
 	printf("> %d reference%s and %d quer%s successfully loaded\n",numSeqsInFirstFile,((numSeqsInFirstFile==1)?"":"s"),n,((n==1)?"y":"ies"));
+	if(memsFileArgNum!=(-1)){ // Create MEMs image
+		CreateMemMapImage(argv[memsFileArgNum]);
+		return 0;
+	}
+	argMatchType=0; // MEMs mode
+	if( ParseArgument(argc,argv,"MA",0) ) argMatchType=1; // MAMs mode
 	argBothStrands=ParseArgument(argc,argv,"B",0);
 	argMinMemSize=ParseArgument(argc,argv,"L",1);
 	if(argMinMemSize==(-1)) argMinMemSize=20; // default minimum MEM length is 20

@@ -112,6 +112,7 @@ void FreeSampledSuffixArray(){
 #endif
 }
 
+static
 #ifndef DEBUGLCP
 __inline
 #endif
@@ -154,6 +155,7 @@ unsigned int GetLcpPosFromBwtPos(unsigned int pos){
 }
 
 // Retrieves the LCP value from the specified Sampled LCP Array position
+static
 #ifndef DEBUGLCP
 __inline
 #endif
