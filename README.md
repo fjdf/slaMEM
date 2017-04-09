@@ -16,7 +16,7 @@ information about _parent intervals_ in a time- and space-efficient way.
 *slaMEM* also includes an useful feature to display the locations of the found
 MEMs, generating images like the one below.
 
-[![MEMs of 57 E.coli strains](https://github.com/fjdf/slaMEM/blob/master/images/all-ecoli-strains-mems_small.bmp?raw=true "E.coli MEMs")](https://github.com/fjdf/slaMEM/blob/master/images/all-ecoli-strains-mems.bmp?raw=true)
+[![MEMs of 57 E.coli strains](https://github.com/fjdf/slaMEM/blob/master/images/all-ecoli-strains-mems_small.jpg)](https://github.com/fjdf/slaMEM/blob/master/images/all-ecoli-strains-mems.bmp?raw=true)
 
 ### Reference
 If you use *slaMEM*, please cite:
